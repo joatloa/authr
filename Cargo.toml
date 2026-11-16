@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["authr","examples/mysql"]
+
+[workspace.dependencies]
+actix-web = "4"
+diesel = { version = "2.4.0", features = ["mysql"] }
