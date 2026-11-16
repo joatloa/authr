@@ -7,7 +7,7 @@ struct RegisterRequest {
     email: String,
     password: String,
     image: Option<String>,
-    callbackURL: Option<String>,
+    callback_url: Option<String>,
 }
 
 #[post("/register")]
@@ -19,8 +19,8 @@ pub async fn register(body: web::Json<RegisterRequest>) -> impl Responder {
 struct LoginRequest {
     email: String,
     password: String,
-    rememberMe: bool,
-    callbackURL: Option<String>,
+    remember_me: bool,
+    callback_url: Option<String>,
 }
 
 #[post("/login")]

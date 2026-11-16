@@ -1,5 +1,9 @@
-use crate::http::router::config;
-use actix_web::{App, HttpServer};
+use std::sync::Arc;
+
+#[cfg(feature = "mysql")]
+use crate::database::adapters::MysqlDatabase;
+use crate::{database::store::AuthDatabase, http::router::config};
+use actix_web::{App, HttpServer, web};
 
 #[derive(Debug)]
 pub struct Address {
@@ -7,9 +11,10 @@ pub struct Address {
     pub port: u16,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Authr {
     address: Option<Address>,
+    database: Option<Arc<dyn AuthDatabase>>,
 }
 
 impl Authr {
@@ -21,6 +26,17 @@ impl Authr {
 
         self
     }
+    pub fn database(
+        &mut self,
+        database_url: &str,
+    ) -> Result<&mut Self, Box<dyn std::error::Error + Send + Sync>> {
+        #[cfg(feature = "mysql")]
+        let database = MysqlDatabase::from_url(database_url)?;
+
+        self.database = Some(Arc::new(database));
+
+        Ok(self)
+    }
     pub async fn run(self) -> std::io::Result<()> {
         let Some(Address { host, port }) = self.address else {
             return Err(std::io::Error::new(
@@ -29,7 +45,16 @@ impl Authr {
             ));
         };
 
-        HttpServer::new(|| App::new().app_data(()).configure(config))
+        let Some(database) = self.database else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Database is missing.",
+            ));
+        };
+
+        let data = web::Data::from(database);
+
+        HttpServer::new(move || App::new().app_data(data.clone()).configure(config))
             .bind((host, port))?
             .run()
             .await

@@ -7,3 +7,4 @@ edition = "2024"
 authr = { version = "0.1.0", path = "../../authr", features = ["mysql", "migrations"] }
 actix-web = { workspace = true }
 diesel = { workspace = true }
+dotenvy = "0.15"
