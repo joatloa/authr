@@ -12,9 +12,6 @@ pub fn config(cfg: &mut ServiceConfig) {
             .service(handlers::sign_in_social)
             .service(handlers::callback)
             // ----- Other
-            .service(handlers::sign_out)
-            .service(handlers::session)
-            .service(handlers::forgot_password)
-            .service(handlers::reset_password),
+            .service(handlers::sign_out),
     );
 }

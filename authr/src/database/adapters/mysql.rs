@@ -19,6 +19,7 @@ use crate::{
         migrations::run_pending_migrations,
         models::{
             AccountRow, NewAccount, NewSession, NewUser, NewVerification, SessionRow, UserRow,
+            VerificationRow,
         },
         schema::{account, session, user, verification},
         store::{AccountsStore, SessionsStore, StoreResult, UsersStore, VerificationStore},
@@ -90,6 +91,18 @@ impl UsersStore for MysqlDatabase {
 
         Ok(result.map(User::from))
     }
+    async fn find_user_by_id(&self, id: &str) -> StoreResult<Option<User>> {
+        let mut conn = self.pool.get().map_err(|_| AuthrError::UserLookupFailed)?;
+
+        let result = user::table
+            .filter(user::id.eq(id))
+            .select(UserRow::as_select())
+            .first::<UserRow>(&mut conn)
+            .optional()
+            .map_err(|_| AuthrError::UserLookupFailed)?;
+
+        Ok(result.map(User::from))
+    }
 }
 
 #[async_trait]
@@ -142,12 +155,9 @@ impl SessionsStore for MysqlDatabase {
 
         let token_hash = hash_str(token);
 
-        diesel::delete(
-            crate::database::schema::session::dsl::session
-                .filter(session::tokenHash.eq(token_hash)),
-        )
-        .execute(&mut conn)
-        .map_err(|_| AuthrError::SessionDeletionFailed)?;
+        diesel::delete(session::table.filter(session::tokenHash.eq(token_hash)))
+            .execute(&mut conn)
+            .map_err(|_| AuthrError::SessionDeletionFailed)?;
 
         Ok(())
     }
@@ -235,5 +245,29 @@ impl VerificationStore for MysqlDatabase {
             .map_err(|_| AuthrError::VerificationCreationFailed)?;
 
         Ok(())
+    }
+    async fn consume_verification(&self, identifier: &str) -> StoreResult<Option<Verification>> {
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|_| AuthrError::VerificationConsumptionFailed)?;
+
+        conn.transaction::<_, diesel::result::Error, _>(|conn| {
+            let row = verification::table
+                .filter(verification::identifier.eq(identifier))
+                .for_update()
+                .first::<VerificationRow>(conn)
+                .optional()?;
+
+            let Some(row) = row else {
+                return Ok(None);
+            };
+
+            diesel::delete(verification::table.filter(verification::id.eq(&row.id)))
+                .execute(conn)?;
+
+            Ok(Some(Verification::from(row)))
+        })
+        .map_err(|_| AuthrError::VerificationConsumptionFailed)
     }
 }

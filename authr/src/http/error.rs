@@ -7,7 +7,7 @@ impl ResponseError for AuthrError {
             Self::InvalidEmail | Self::InvalidName | Self::InvalidPassword => {
                 StatusCode::BAD_REQUEST
             }
-            Self::InvalidCredentials => StatusCode::UNAUTHORIZED,
+            Self::InvalidCredentials | Self::UserNotFound => StatusCode::UNAUTHORIZED,
             Self::UserAlreadyExists => StatusCode::CONFLICT,
             Self::ProviderNotFound => StatusCode::NOT_FOUND,
             _ => StatusCode::INTERNAL_SERVER_ERROR,

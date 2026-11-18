@@ -15,6 +15,8 @@ pub enum AuthrError {
     InvalidCredentials,
     #[error("User already exists")]
     UserAlreadyExists,
+    #[error("User not found")]
+    UserNotFound,
 
     // -------------------- Database --------------------
     #[error("Failed to find user")]
@@ -31,6 +33,8 @@ pub enum AuthrError {
     SessionDeletionFailed,
     #[error("Failed to create verification")]
     VerificationCreationFailed,
+    #[error("Failed to consume verification")]
+    VerificationConsumptionFailed,
 
     // -------------------- Cryptography --------------------
     #[error("Password hashing failed")]

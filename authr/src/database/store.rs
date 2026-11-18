@@ -12,6 +12,7 @@ pub type StoreResult<T> = Result<T, AuthrError>;
 pub trait UsersStore: Send + Sync {
     async fn create_user(&self, user: User) -> StoreResult<User>;
     async fn find_user_by_email(&self, email: &str) -> StoreResult<Option<User>>;
+    async fn find_user_by_id(&self, email: &str) -> StoreResult<Option<User>>;
 }
 #[async_trait]
 pub trait SessionsStore: Send + Sync {
@@ -30,4 +31,5 @@ pub trait AccountsStore: Send + Sync {
 #[async_trait]
 pub trait VerificationStore: Send + Sync {
     async fn create_verification(&self, verification: Verification) -> StoreResult<()>;
+    async fn consume_verification(&self, identifier: &str) -> StoreResult<Option<Verification>>;
 }
