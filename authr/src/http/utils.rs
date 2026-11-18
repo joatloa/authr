@@ -3,8 +3,10 @@ use chrono::Utc;
 
 use crate::core::types::Session;
 
+pub const SESSION_COOKIE_NAME: &str = "authr_session";
+
 pub fn get_session_cookie(session: &Session) -> Cookie<'static> {
-    let mut cookie = Cookie::build("authr_session", session.token.clone())
+    let mut cookie = Cookie::build(SESSION_COOKIE_NAME, session.token.clone())
         .http_only(true)
         .secure(true)
         .same_site(SameSite::Lax)

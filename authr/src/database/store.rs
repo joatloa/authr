@@ -16,6 +16,7 @@ pub trait UsersStore: Send + Sync {
 #[async_trait]
 pub trait SessionsStore: Send + Sync {
     async fn create_session(&self, user_id: &str, remember_me: bool) -> StoreResult<Session>;
+    async fn delete_session(&self, token: &str) -> StoreResult<()>;
 }
 #[async_trait]
 pub trait AccountsStore: Send + Sync {

@@ -27,6 +27,8 @@ pub enum AuthrError {
     AccountLookupFailed,
     #[error("Failed to create session")]
     SessionCreationFailed,
+    #[error("Failed to delete session")]
+    SessionDeletionFailed,
     #[error("Failed to create verification")]
     VerificationCreationFailed,
 

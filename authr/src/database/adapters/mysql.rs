@@ -134,6 +134,23 @@ impl SessionsStore for MysqlDatabase {
 
         Ok(row.into_session(token))
     }
+    async fn delete_session(&self, token: &str) -> StoreResult<()> {
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|_| AuthrError::SessionDeletionFailed)?;
+
+        let token_hash = hash_str(token);
+
+        diesel::delete(
+            crate::database::schema::session::dsl::session
+                .filter(session::tokenHash.eq(token_hash)),
+        )
+        .execute(&mut conn)
+        .map_err(|_| AuthrError::SessionDeletionFailed)?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
