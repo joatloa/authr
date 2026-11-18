@@ -1,3 +1,3 @@
 mod auth;
 
-pub use auth::{Address, Authr};
+pub use auth::{Address, Authr, AuthrData};

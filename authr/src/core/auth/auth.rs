@@ -2,8 +2,11 @@ use std::sync::Arc;
 
 #[cfg(feature = "mysql")]
 use crate::database::adapters::MysqlDatabase;
-use crate::{database::store::AuthDatabase, http::router::config};
+use crate::{
+    database::store::AuthDatabase, http::router::config, utilities::password::create_argon,
+};
 use actix_web::{App, HttpServer, web};
+use argon2::Argon2;
 
 #[derive(Debug)]
 pub struct Address {
@@ -15,6 +18,11 @@ pub struct Address {
 pub struct Authr {
     address: Option<Address>,
     database: Option<Arc<dyn AuthDatabase>>,
+}
+
+pub struct AuthrData {
+    pub database: Arc<dyn AuthDatabase>,
+    pub argon: Argon2<'static>,
 }
 
 impl Authr {
@@ -52,7 +60,10 @@ impl Authr {
             ));
         };
 
-        let data = web::Data::from(database);
+        let data = web::Data::new(AuthrData {
+            database,
+            argon: create_argon(),
+        });
 
         HttpServer::new(move || App::new().app_data(data.clone()).configure(config))
             .bind((host, port))?

@@ -11,7 +11,7 @@ CREATE TABLE `user` (
 CREATE TABLE `session` (
     `id` VARCHAR(36) PRIMARY KEY NOT NULL,
     `userId` VARCHAR(36) NOT NULL,
-    `token` VARCHAR(255) NOT NULL UNIQUE,
+    `tokenHash` VARCHAR(255) NOT NULL UNIQUE,
     `expiresAt` TIMESTAMP(3) NOT NULL,
     `ipAddress` TEXT,
     `userAgent` TEXT,
@@ -36,6 +36,9 @@ CREATE TABLE `account` (
     `updatedAt` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     CONSTRAINT `fk_account_userId` FOREIGN KEY (`userId`) REFERENCES `user`(`id`) ON DELETE CASCADE
 );
+
+CREATE UNIQUE INDEX `idx_account_provider_account`
+ON `account`(`providerId`, `accountId`);
 
 CREATE TABLE `verification` (
     `id` VARCHAR(36) PRIMARY KEY NOT NULL,

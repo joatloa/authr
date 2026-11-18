@@ -17,7 +17,7 @@ keywords = ["authentication", "auth", "oauth", "actix", "diesel"]
 actix-web = { version = "4" }
 
 # Database
-diesel = { version = "2", default-features = false, features = ["r2d2"] }
+diesel = { version = "2", default-features = false, features = ["r2d2", "chrono"] }
 diesel_migrations = { version = "2.4.0", optional = true }
 
 # Async support
@@ -31,6 +31,9 @@ serde_json = "1"
 # Cryptography and password hashing
 argon2 = "0.5"
 rand = "0.8"
+hmac = "0.12"
+sha2 = "0.11.1"
+base64 = "0.22"
 
 # OAuth / OpenID Connect
 oauth2 = "5"
