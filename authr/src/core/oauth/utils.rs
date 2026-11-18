@@ -1,10 +1,9 @@
 use url::Url;
 
-pub fn get_provider_callback_url(
-    base_url: &str,
-    provider_id: &str,
-) -> Result<Url, url::ParseError> {
-    let mut url = Url::parse(base_url)?;
+use crate::core::error::AuthrError;
+
+pub fn get_provider_callback_url(base_url: &str, provider_id: &str) -> Result<Url, AuthrError> {
+    let mut url = Url::parse(base_url).map_err(|_| AuthrError::Internal)?;
 
     url.set_path(&format!("/api/auth/{provider_id}/callback"));
     url.set_query(None);

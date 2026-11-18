@@ -10,6 +10,7 @@ use diesel::mysql::MysqlConnection;
 
 use crate::{
     core::{
+        error::AuthrError,
         types::{Account, Session, User, Verification},
         utils::{generate_random_value, hash_str},
     },
@@ -47,7 +48,10 @@ impl MysqlDatabase {
 #[async_trait]
 impl UsersStore for MysqlDatabase {
     async fn create_user(&self, user: User) -> StoreResult<User> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|_| AuthrError::UserCreationFailed)?;
 
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().naive_utc();
@@ -63,23 +67,26 @@ impl UsersStore for MysqlDatabase {
 
         diesel::insert_into(user::table)
             .values(&new_user)
-            .execute(&mut conn)?;
+            .execute(&mut conn)
+            .map_err(|_| AuthrError::UserCreationFailed)?;
         let row = user::table
             .filter(user::id.eq(&id))
             .select(UserRow::as_select())
-            .first::<UserRow>(&mut conn)?;
+            .first::<UserRow>(&mut conn)
+            .map_err(|_| AuthrError::UserCreationFailed)?;
 
         Ok(User::from(row))
     }
 
     async fn find_user_by_email(&self, email: &str) -> StoreResult<Option<User>> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self.pool.get().map_err(|_| AuthrError::UserLookupFailed)?;
 
         let result = user::table
             .filter(user::email.eq(email))
             .select(UserRow::as_select())
             .first::<UserRow>(&mut conn)
-            .optional()?;
+            .optional()
+            .map_err(|_| AuthrError::UserLookupFailed)?;
 
         Ok(result.map(User::from))
     }
@@ -88,7 +95,10 @@ impl UsersStore for MysqlDatabase {
 #[async_trait]
 impl SessionsStore for MysqlDatabase {
     async fn create_session(&self, user_id: &str, remember_me: bool) -> StoreResult<Session> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|_| AuthrError::SessionCreationFailed)?;
 
         let id = Uuid::new_v4().to_string();
         let token = generate_random_value();
@@ -113,12 +123,14 @@ impl SessionsStore for MysqlDatabase {
 
         diesel::insert_into(session::table)
             .values(&new_session)
-            .execute(&mut conn)?;
+            .execute(&mut conn)
+            .map_err(|_| AuthrError::SessionCreationFailed)?;
 
         let row = session::table
             .filter(session::id.eq(&id))
             .select(SessionRow::as_select())
-            .first::<SessionRow>(&mut conn)?;
+            .first::<SessionRow>(&mut conn)
+            .map_err(|_| AuthrError::SessionCreationFailed)?;
 
         Ok(row.into_session(token))
     }
@@ -127,7 +139,10 @@ impl SessionsStore for MysqlDatabase {
 #[async_trait]
 impl AccountsStore for MysqlDatabase {
     async fn link_account(&self, account_data: Account) -> StoreResult<()> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|_| AuthrError::AccountCreationFailed)?;
 
         let id = account_data.id.to_string();
         let user_id = account_data.user_id.to_string();
@@ -151,7 +166,8 @@ impl AccountsStore for MysqlDatabase {
 
         diesel::insert_into(account::table)
             .values(&new_account)
-            .execute(&mut conn)?;
+            .execute(&mut conn)
+            .map_err(|_| AuthrError::AccountCreationFailed)?;
 
         Ok(())
     }
@@ -162,14 +178,18 @@ impl AccountsStore for MysqlDatabase {
     ) -> StoreResult<Option<Account>> {
         use crate::database::schema::account::dsl::*;
 
-        let mut conn = self.pool.get()?;
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|_| AuthrError::AccountLookupFailed)?;
 
         let row = account
             .filter(providerId.eq(provider_id))
             .filter(accountId.eq(account_id))
             .select(AccountRow::as_select())
             .first::<AccountRow>(&mut conn)
-            .optional()?;
+            .optional()
+            .map_err(|_| AuthrError::AccountLookupFailed)?;
 
         Ok(row.map(Account::from))
     }
@@ -187,11 +207,15 @@ impl VerificationStore for MysqlDatabase {
             updatedAt: verification.updated_at.naive_utc(),
         };
 
-        let mut conn = self.pool.get()?;
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|_| AuthrError::VerificationCreationFailed)?;
 
         diesel::insert_into(verification::table)
             .values(&new_verification)
-            .execute(&mut conn)?;
+            .execute(&mut conn)
+            .map_err(|_| AuthrError::VerificationCreationFailed)?;
 
         Ok(())
     }

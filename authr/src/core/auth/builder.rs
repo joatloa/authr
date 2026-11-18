@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 #[cfg(feature = "mysql")]
 use crate::database::adapters::MysqlDatabase;
 
-use crate::core::oauth::Provider;
+use crate::core::{error::AuthrError, oauth::Provider};
 
 #[derive(Default)]
 pub struct Authr {
@@ -24,10 +24,7 @@ impl Authr {
 
         self
     }
-    pub fn database(
-        &mut self,
-        database_url: &str,
-    ) -> Result<&mut Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn database(&mut self, database_url: &str) -> Result<&mut Self, AuthrError> {
         #[cfg(feature = "mysql")]
         let database = MysqlDatabase::from_url(database_url)?;
 

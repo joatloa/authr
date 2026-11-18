@@ -1,12 +1,12 @@
-use actix_web::{HttpResponse, ResponseError, http::StatusCode, post, web};
+use actix_web::{HttpResponse, post, web};
 use email_address::EmailAddress;
 use serde::Deserialize;
 use serde_json::json;
-use thiserror::Error;
 
 use crate::{
     core::{
         auth::AuthrData,
+        error::AuthrError,
         types::{Account, User},
         utils::hash_password,
     },
@@ -14,46 +14,6 @@ use crate::{
     http::utils::get_session_cookie,
 };
 
-// -------------------- Error --------------------
-#[derive(Debug, Error)]
-pub enum SignUpError {
-    #[error("Invalid email")]
-    InvalidEmail,
-    #[error("Invalid name")]
-    InvalidName,
-    #[error("Invalid password")]
-    InvalidPassword,
-    #[error("User already exists")]
-    UserAlreadyExists,
-    #[error("Finding user failed")]
-    UserLookupFailed,
-    #[error("Password hashing failed")]
-    PasswordHashingFailed,
-    #[error("User creation failed")]
-    UserCreationFailed,
-    #[error("Credential account creation failed")]
-    AccountCreationFailed,
-    #[error("Session creation failed")]
-    SessionCreationFailed,
-}
-
-impl ResponseError for SignUpError {
-    fn status_code(&self) -> StatusCode {
-        match self {
-            Self::InvalidEmail | Self::InvalidPassword => StatusCode::BAD_REQUEST,
-
-            Self::UserAlreadyExists => StatusCode::CONFLICT,
-
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    fn error_response(&self) -> HttpResponse {
-        HttpResponse::build(self.status_code()).body(self.to_string())
-    }
-}
-
-// -------------------- Handler --------------------
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RegisterRequest {
@@ -73,7 +33,7 @@ fn default_remember_me() -> bool {
 pub async fn sign_up(
     data: web::Data<AuthrData>,
     body: web::Json<RegisterRequest>,
-) -> Result<HttpResponse, SignUpError> {
+) -> Result<HttpResponse, AuthrError> {
     let RegisterRequest {
         name,
         email,
@@ -86,32 +46,26 @@ pub async fn sign_up(
 
     // ---- Check request body
     if !EmailAddress::is_valid(&email) {
-        return Err(SignUpError::InvalidEmail);
+        return Err(AuthrError::InvalidEmail);
     }
     if password.len() < 8 || password.len() > 128 {
-        return Err(SignUpError::InvalidPassword);
+        return Err(AuthrError::InvalidPassword);
     }
     if name.trim().is_empty() {
-        return Err(SignUpError::InvalidName);
+        return Err(AuthrError::InvalidName);
     }
 
     // ---- Check if user already exists
-    let db_user = data
-        .database
-        .find_user_by_email(&email)
-        .await
-        .map_err(|_| SignUpError::UserLookupFailed)?;
+    let db_user = data.database.find_user_by_email(&email).await?;
     if db_user.is_some() {
-        return Err(SignUpError::UserAlreadyExists);
+        return Err(AuthrError::UserAlreadyExists);
     }
 
     // ---- Create user
     let argon = data.argon.clone();
-    let password_hash = web::block(move || {
-        hash_password(&argon, &password).map_err(|_| SignUpError::PasswordHashingFailed)
-    })
-    .await
-    .map_err(|_| SignUpError::PasswordHashingFailed)??;
+    let password_hash = web::block(move || hash_password(&argon, &password))
+        .await
+        .map_err(|_| AuthrError::PasswordHashingFailed)??;
 
     let created_user = data
         .database
@@ -121,8 +75,7 @@ pub async fn sign_up(
             image,
             ..Default::default()
         })
-        .await
-        .map_err(|_| SignUpError::UserCreationFailed)?;
+        .await?;
 
     // ---- Link created user with a `credential` account
     data.database
@@ -133,15 +86,13 @@ pub async fn sign_up(
             password_hash: Some(password_hash),
             ..Default::default()
         })
-        .await
-        .map_err(|_| SignUpError::AccountCreationFailed)?;
+        .await?;
 
     // ----- Create the session for the user
     let session = data
         .database
         .create_session(&created_user.id.to_string(), remember_me)
-        .await
-        .map_err(|_| SignUpError::SessionCreationFailed)?;
+        .await?;
 
     // ----- Give Response
     Ok(HttpResponse::Created()

@@ -5,6 +5,8 @@ use argon2::{
 use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 
+use crate::core::error::AuthrError;
+
 // ----- Tokens
 pub fn generate_random_value() -> String {
     let mut bytes = [0u8; 32];
@@ -24,20 +26,19 @@ pub fn create_argon() -> Argon2<'static> {
 
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
 }
-pub fn hash_password(
-    argon2: &Argon2<'static>,
-    password: &str,
-) -> Result<String, argon2::password_hash::Error> {
+pub fn hash_password(argon2: &Argon2<'static>, password: &str) -> Result<String, AuthrError> {
     let salt = SaltString::generate(&mut OsRng);
 
     let password_hash = argon2
-        .hash_password(password.as_bytes(), &salt)?
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|_| AuthrError::PasswordHashingFailed)?
         .to_string();
 
     Ok(password_hash)
 }
-pub fn verify_password(password: &str, hash: &str) -> Result<bool, argon2::password_hash::Error> {
-    let parsed_hash = PasswordHash::new(hash)?;
+pub fn verify_password(password: &str, hash: &str) -> Result<bool, AuthrError> {
+    let parsed_hash =
+        PasswordHash::new(hash).map_err(|_| AuthrError::PasswordVerificationFailed)?;
 
     Ok(Argon2::default()
         .verify_password(password.as_bytes(), &parsed_hash)

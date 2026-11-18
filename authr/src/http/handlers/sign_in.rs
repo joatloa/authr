@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, Responder, post, web};
+use actix_web::{HttpResponse, post, web};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -6,13 +6,14 @@ use uuid::Uuid;
 use crate::{
     core::{
         auth::AuthrData,
+        error::AuthrError::{self},
         oauth::{
             OAuthProvider,
             types::AuthorizationParams,
             utils::{generate_pkce_challenge, get_provider_callback_url},
         },
         types::Verification,
-        utils::{create_argon, generate_random_value, hash_password, verify_password},
+        utils::{generate_random_value, hash_password, verify_password},
     },
     database::store::{AccountsStore, SessionsStore, UsersStore, VerificationStore},
     http::utils::get_session_cookie,
@@ -38,7 +39,7 @@ fn default_remember_me() -> bool {
 pub async fn sign_in_email(
     data: web::Data<AuthrData>,
     body: web::Json<SigninEmailRequest>,
-) -> impl Responder {
+) -> Result<HttpResponse, AuthrError> {
     let SigninEmailRequest {
         email,
         password,
@@ -48,9 +49,9 @@ pub async fn sign_in_email(
     let email = email.trim().to_lowercase();
 
     // ----- Find the user.
-    let user = match data.database.find_user_by_email(&email).await {
-        Ok(Some(user)) => user,
-        Ok(None) => {
+    let user = match data.database.find_user_by_email(&email).await? {
+        Some(user) => user,
+        None => {
             // Hash password to prevent timing attacks from revealing valid email addresses
             // By hashing passwords for invalid emails, we ensure consistent response times
             let _ = web::block(move || {
@@ -58,13 +59,7 @@ pub async fn sign_in_email(
             })
             .await;
 
-            return HttpResponse::Unauthorized().json(serde_json::json!({
-                "error": "Invalid email or password"
-            }));
-        }
-        Err(error) => {
-            eprintln!("Failed to find user: {error}");
-            return HttpResponse::InternalServerError().finish();
+            return Err(AuthrError::InvalidCredentials);
         }
     };
 
@@ -72,62 +67,42 @@ pub async fn sign_in_email(
     let account = match data
         .database
         .find_account("credential", &user.id.to_string())
-        .await
+        .await?
     {
-        Ok(Some(account)) => account,
-        Ok(None) => {
+        Some(account) => account,
+        None => {
             let _ = web::block(move || {
-                let argon = create_argon();
-                let _ = hash_password(&argon, &password);
+                let _ = hash_password(&data.argon, &password);
             })
             .await;
 
-            return HttpResponse::Unauthorized().json(serde_json::json!({
-                "error": "Invalid email or password"
-            }));
-        }
-        Err(error) => {
-            eprintln!("Failed to find credential account: {error}");
-            return HttpResponse::InternalServerError().finish();
+            return Err(AuthrError::InvalidCredentials);
         }
     };
 
     // ----- Check the received password against the `credential` account's password
     let Some(password_hash) = account.password_hash else {
-        return HttpResponse::Unauthorized().json(serde_json::json!({
-            "error": "Invalid email or password"
-        }));
+        return Err(AuthrError::InvalidCredentials);
     };
-
     let valid_password = match web::block(move || verify_password(&password, &password_hash)).await
     {
         Ok(Ok(valid)) => valid,
         _ => {
-            return HttpResponse::InternalServerError().finish();
+            return Err(AuthrError::Internal);
         }
     };
-
     if !valid_password {
-        return HttpResponse::Unauthorized().json(serde_json::json!({
-            "error": "Invalid email or password"
-        }));
+        return Err(AuthrError::InvalidCredentials);
     }
 
     // ----- Create the session for the user
-    let session = match data
+    let session = data
         .database
         .create_session(&user.id.to_string(), remember_me)
-        .await
-    {
-        Ok(session) => session,
-        Err(error) => {
-            eprintln!("Failed to create session: {error}");
-            return HttpResponse::InternalServerError().finish();
-        }
-    };
+        .await?;
 
     // ----- Give Response
-    HttpResponse::Ok()
+    Ok(HttpResponse::Ok()
         .cookie(get_session_cookie(&session))
         .json(serde_json::json!({
             "redirect": callback_url.is_some(),
@@ -140,7 +115,7 @@ pub async fn sign_in_email(
                 "emailVerified": user.email_verified,
                 "image": user.image,
             }
-        }))
+        })))
 }
 
 // -------------------- OAuth2 --------------------
@@ -169,7 +144,7 @@ struct OAuthTransaction {
 pub async fn sign_in_social(
     data: web::Data<AuthrData>,
     body: web::Json<SigninSocialRequest>,
-) -> impl Responder {
+) -> Result<HttpResponse, AuthrError> {
     let SigninSocialRequest {
         provider,
         callback_url,
@@ -179,9 +154,7 @@ pub async fn sign_in_social(
 
     // ----- Find the provider
     let Some(provider) = data.providers.get(&provider) else {
-        return HttpResponse::NotFound().json(serde_json::json!({
-            "error": "OAuth provider not found"
-        }));
+        return Err(AuthrError::ProviderNotFound);
     };
 
     // ----- Build a transaction value for the transaction
@@ -198,13 +171,8 @@ pub async fn sign_in_social(
         callback_url: callback_url.clone(),
     };
 
-    let transaction_value = match serde_json::to_string(&transaction) {
-        Ok(value) => value,
-        Err(error) => {
-            eprintln!("Failed to serialize OAuth transaction: {error}");
-            return HttpResponse::InternalServerError().finish();
-        }
-    };
+    let transaction_value =
+        serde_json::to_string(&transaction).map_err(|_| AuthrError::Internal)?;
 
     // ----- Create a verification
     let now = Utc::now();
@@ -216,36 +184,21 @@ pub async fn sign_in_social(
         created_at: now,
         updated_at: now,
     };
-    if let Err(error) = data.database.create_verification(verification).await {
-        eprintln!("Failed to store OAuth transaction: {error}");
-        return HttpResponse::InternalServerError().finish();
-    }
+    data.database.create_verification(verification).await?;
 
     // ----- Redirect to the OAuth provider
     // Build the callback URL registered with the OAuth provider.
-    let redirect_uri = match get_provider_callback_url(&data.base_url, provider.id()) {
-        Ok(url) => url,
-        Err(error) => {
-            eprintln!("Invalid OAuth callback URL: {error}");
-            return HttpResponse::InternalServerError().finish();
-        }
-    };
+    let redirect_uri = get_provider_callback_url(&data.base_url, provider.id())?;
 
     // Use custom scopes if provided; otherwise use the provider defaults.
     let scopes = scopes.clone().unwrap_or_else(|| provider.scopes().to_vec());
 
-    let authorization_url = match provider.authorization_url(AuthorizationParams {
+    let authorization_url = provider.authorization_url(AuthorizationParams {
         state,
         code_challenge,
         redirect_uri,
         scopes,
-    }) {
-        Ok(url) => url,
-        Err(error) => {
-            eprintln!("Failed to generate authorization URL: {error}");
-            return HttpResponse::InternalServerError().finish();
-        }
-    };
+    })?;
 
     // ----- Give Response
     let mut response = HttpResponse::Ok();
@@ -254,8 +207,8 @@ pub async fn sign_in_social(
         response.append_header(("Location", authorization_url.as_str()));
     }
 
-    response.json(serde_json::json!({
+    Ok(response.json(serde_json::json!({
         "url": authorization_url,
         "redirect": redirect,
-    }))
+    })))
 }

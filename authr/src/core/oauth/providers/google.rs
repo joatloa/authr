@@ -3,9 +3,12 @@ use reqwest::Client;
 use serde::Deserialize;
 use url::Url;
 
-use crate::core::oauth::{
-    OAuthProvider,
-    types::{AuthorizationParams, ProviderError, ProviderUser, TokenExchangeParams, TokenResponse},
+use crate::core::{
+    error::AuthrError,
+    oauth::{
+        OAuthProvider,
+        types::{AuthorizationParams, ProviderUser, TokenExchangeParams, TokenResponse},
+    },
 };
 
 const AUTHORIZATION_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -81,19 +84,18 @@ impl GoogleProvider {
     }
 }
 
+// -------------------- OAuthProvider Implementation --------------------
+
 #[async_trait]
 impl OAuthProvider for GoogleProvider {
     fn id(&self) -> &'static str {
         "google"
     }
-
     fn scopes(&self) -> &[String] {
         &self.scopes
     }
-
-    fn authorization_url(&self, params: AuthorizationParams) -> Result<Url, ProviderError> {
-        let mut url =
-            Url::parse(AUTHORIZATION_URL).map_err(|_| ProviderError::InvalidAuthorizationCode)?;
+    fn authorization_url(&self, params: AuthorizationParams) -> Result<Url, AuthrError> {
+        let mut url = Url::parse(AUTHORIZATION_URL).map_err(|_| AuthrError::Internal)?;
 
         {
             let mut query = url.query_pairs_mut();
@@ -112,11 +114,10 @@ impl OAuthProvider for GoogleProvider {
 
         Ok(url)
     }
-
     async fn exchange_code(
         &self,
         params: TokenExchangeParams,
-    ) -> Result<TokenResponse, ProviderError> {
+    ) -> Result<TokenResponse, AuthrError> {
         let response = self
             .http
             .post(TOKEN_URL)
@@ -129,29 +130,33 @@ impl OAuthProvider for GoogleProvider {
                 ("grant_type", "authorization_code"),
             ])
             .send()
-            .await?
-            .error_for_status()?
+            .await
+            .map_err(|_| AuthrError::Internal)?
+            .error_for_status()
+            .map_err(|_| AuthrError::Internal)?
             .json::<GoogleTokenResponse>()
-            .await?;
+            .await
+            .map_err(|_| AuthrError::Internal)?;
 
         Ok(Self::build_token_response(response, None))
     }
-
-    async fn get_user_info(&self, tokens: &TokenResponse) -> Result<ProviderUser, ProviderError> {
+    async fn get_user_info(&self, tokens: &TokenResponse) -> Result<ProviderUser, AuthrError> {
         let user = self
             .http
             .get(USER_INFO_URL)
             .bearer_auth(&tokens.access_token)
             .send()
-            .await?
-            .error_for_status()?
+            .await
+            .map_err(|_| AuthrError::Internal)?
+            .error_for_status()
+            .map_err(|_| AuthrError::Internal)?
             .json::<GoogleUserInfo>()
-            .await?;
+            .await
+            .map_err(|_| AuthrError::Internal)?;
 
         Ok(user.into())
     }
-
-    async fn refresh_token(&self, refresh_token: &str) -> Result<TokenResponse, ProviderError> {
+    async fn refresh_token(&self, refresh_token: &str) -> Result<TokenResponse, AuthrError> {
         let response = self
             .http
             .post(TOKEN_URL)
@@ -162,10 +167,13 @@ impl OAuthProvider for GoogleProvider {
                 ("grant_type", "refresh_token"),
             ])
             .send()
-            .await?
-            .error_for_status()?
+            .await
+            .map_err(|_| AuthrError::Internal)?
+            .error_for_status()
+            .map_err(|_| AuthrError::Internal)?
             .json::<GoogleTokenResponse>()
-            .await?;
+            .await
+            .map_err(|_| AuthrError::Internal)?;
 
         Ok(Self::build_token_response(
             response,
