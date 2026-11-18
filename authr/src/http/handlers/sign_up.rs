@@ -6,12 +6,12 @@ use thiserror::Error;
 
 use crate::{
     core::{
-        state::AuthrData,
+        auth::AuthrData,
         types::{Account, User},
+        utils::hash_password,
     },
     database::store::{AccountsStore, SessionsStore, UsersStore},
     http::utils::get_session_cookie,
-    utilities::password::hash_password,
 };
 
 // -------------------- Error --------------------
@@ -106,8 +106,13 @@ pub async fn sign_up(
     }
 
     // ---- Create user
-    let password_hash =
-        hash_password(&data.argon, &password).map_err(|_| SignUpError::PasswordHashingFailed)?;
+    let argon = data.argon.clone();
+    let password_hash = web::block(move || {
+        hash_password(&argon, &password).map_err(|_| SignUpError::PasswordHashingFailed)
+    })
+    .await
+    .map_err(|_| SignUpError::PasswordHashingFailed)??;
+
     let created_user = data
         .database
         .create_user(User {

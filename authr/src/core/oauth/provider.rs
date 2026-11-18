@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use reqwest::Url;
 
 use crate::core::oauth::{
-    providers::google::GoogleProvider,
+    providers::GoogleProvider,
     types::{AuthorizationParams, ProviderError, ProviderUser, TokenExchangeParams, TokenResponse},
 };
 

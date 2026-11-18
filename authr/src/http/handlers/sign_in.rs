@@ -5,18 +5,17 @@ use uuid::Uuid;
 
 use crate::{
     core::{
+        auth::AuthrData,
         oauth::{
             OAuthProvider,
             types::AuthorizationParams,
             utils::{generate_pkce_challenge, get_provider_callback_url},
         },
-        state::AuthrData,
         types::Verification,
-        utils::generate_random_value,
+        utils::{create_argon, generate_random_value, hash_password, verify_password},
     },
     database::store::{AccountsStore, SessionsStore, UsersStore, VerificationStore},
     http::utils::get_session_cookie,
-    utilities::password::{create_argon, hash_password, verify_password},
 };
 
 // -------------------- Email and Password --------------------

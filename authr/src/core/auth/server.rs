@@ -2,12 +2,11 @@ use actix_web::{App, HttpServer, web};
 
 use crate::{
     core::{
-        builder::Authr,
+        auth::{Authr, AuthrData, ProviderRegistry},
         oauth::OAuthProvider,
-        state::{AuthrData, ProviderRegistry},
+        utils::create_argon,
     },
     http::router::config,
-    utilities::password::create_argon,
 };
 
 impl Authr {

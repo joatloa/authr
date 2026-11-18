@@ -1,4 +1,3 @@
 pub mod core;
-mod database;
-mod http;
-mod utilities;
+pub mod database;
+pub mod http;

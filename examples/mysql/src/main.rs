@@ -1,6 +1,6 @@
 use std::{env, error::Error};
 
-use authr::core::builder::Authr;
+use authr::core::auth::Authr;
 use dotenvy::dotenv;
 
 #[actix_web::main]
