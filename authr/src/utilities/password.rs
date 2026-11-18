@@ -5,13 +5,7 @@ use argon2::{
 use rand::rngs::OsRng;
 
 pub fn create_argon() -> Argon2<'static> {
-    let params = Params::new(
-        19 * 1024, // Memory: 19 MiB
-        2,         // Iterations
-        1,         // Parallelism
-        None,
-    )
-    .expect("Invalid Argon2 parameters");
+    let params = Params::new(19 * 1024, 2, 1, None).expect("Invalid Argon2 parameters");
 
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
 }

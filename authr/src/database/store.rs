@@ -1,13 +1,8 @@
 use async_trait::async_trait;
 
-use crate::core::types::{Account, Session, User};
+use crate::core::types::{Account, Session, User, Verification};
 
 pub type StoreResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-pub trait AuthDatabase:
-    UsersStore + SessionsStore + AccountsStore + VerificationStore + Send + Sync
-{
-}
 
 #[async_trait]
 pub trait UsersStore: Send + Sync {
@@ -23,7 +18,14 @@ pub trait SessionsStore: Send + Sync {
 #[async_trait]
 pub trait AccountsStore: Send + Sync {
     async fn link_account(&self, account: Account) -> StoreResult<()>;
+    async fn find_account(
+        &self,
+        provider_id: &str,
+        account_id: &str,
+    ) -> StoreResult<Option<Account>>;
 }
 
 #[async_trait]
-pub trait VerificationStore: Send + Sync {}
+pub trait VerificationStore: Send + Sync {
+    async fn create_verification(&self, verification: Verification) -> StoreResult<()>;
+}

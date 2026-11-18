@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-authr = { version = "0.1.0", path = "../../authr", features = ["mysql", "migrations"] }
+authr = { version = "0.1.0", path = "../../authr", features = ["mysql"] }
 actix-web = { workspace = true }
 diesel = { workspace = true }
 dotenvy = "0.15"

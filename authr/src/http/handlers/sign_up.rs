@@ -6,10 +6,11 @@ use thiserror::Error;
 
 use crate::{
     core::{
-        AuthrData,
-        helpers::session::get_session_cookie,
+        state::AuthrData,
         types::{Account, User},
     },
+    database::store::{AccountsStore, SessionsStore, UsersStore},
+    http::utils::get_session_cookie,
     utilities::password::hash_password,
 };
 
@@ -54,13 +55,18 @@ impl ResponseError for SignUpError {
 
 // -------------------- Handler --------------------
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RegisterRequest {
     name: String,
     email: String,
     password: String,
     image: Option<String>,
     callback_url: Option<String>,
-    remember_me: Option<bool>,
+    #[serde(default = "default_remember_me")]
+    remember_me: bool,
+}
+fn default_remember_me() -> bool {
+    false
 }
 
 #[post("/sign-up")]
@@ -128,18 +134,20 @@ pub async fn sign_up(
     // ----- Create the session for the user
     let session = data
         .database
-        .create_session(&created_user.id.to_string(), remember_me.unwrap_or(false))
+        .create_session(&created_user.id.to_string(), remember_me)
         .await
         .map_err(|_| SignUpError::SessionCreationFailed)?;
-    let cookie = get_session_cookie(&session);
 
-    Ok(HttpResponse::Created().cookie(cookie).json(json!({
-        "user": {
-            "id": created_user.id,
-            "name": created_user.name,
-            "email": created_user.email,
-            "image": created_user.image,
-            "emailVerified": created_user.email_verified
-        }
-    })))
+    // ----- Give Response
+    Ok(HttpResponse::Created()
+        .cookie(get_session_cookie(&session))
+        .json(json!({
+            "user": {
+                "id": created_user.id,
+                "name": created_user.name,
+                "email": created_user.email,
+                "image": created_user.image,
+                "emailVerified": created_user.email_verified
+            }
+        })))
 }

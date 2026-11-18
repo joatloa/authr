@@ -10,17 +10,17 @@ use diesel::mysql::MysqlConnection;
 
 use crate::{
     core::{
-        helpers::session::{generate_token, hash_token},
-        types::{Account, Session, User},
+        types::{Account, Session, User, Verification},
+        utils::{generate_random_value, hash_str},
     },
     database::{
         create_pool,
         migrations::run_pending_migrations,
-        models::{NewAccount, NewSession, NewUser, SessionRow, UserRow},
-        schema::{account, session, user},
-        store::{
-            AccountsStore, AuthDatabase, SessionsStore, StoreResult, UsersStore, VerificationStore,
+        models::{
+            AccountRow, NewAccount, NewSession, NewUser, NewVerification, SessionRow, UserRow,
         },
+        schema::{account, session, user, verification},
+        store::{AccountsStore, SessionsStore, StoreResult, UsersStore, VerificationStore},
     },
 };
 
@@ -91,8 +91,8 @@ impl SessionsStore for MysqlDatabase {
         let mut conn = self.pool.get()?;
 
         let id = Uuid::new_v4().to_string();
-        let token = generate_token();
-        let token_hash = hash_token(&token);
+        let token = generate_random_value();
+        let token_hash = hash_str(&token);
         let now = Utc::now().naive_utc();
         let duration = if remember_me {
             Duration::days(30)
@@ -155,9 +155,44 @@ impl AccountsStore for MysqlDatabase {
 
         Ok(())
     }
+    async fn find_account(
+        &self,
+        provider_id: &str,
+        account_id: &str,
+    ) -> StoreResult<Option<Account>> {
+        use crate::database::schema::account::dsl::*;
+
+        let mut conn = self.pool.get()?;
+
+        let row = account
+            .filter(providerId.eq(provider_id))
+            .filter(accountId.eq(account_id))
+            .select(AccountRow::as_select())
+            .first::<AccountRow>(&mut conn)
+            .optional()?;
+
+        Ok(row.map(Account::from))
+    }
 }
 
 #[async_trait]
-impl VerificationStore for MysqlDatabase {}
+impl VerificationStore for MysqlDatabase {
+    async fn create_verification(&self, verification: Verification) -> StoreResult<()> {
+        let new_verification = NewVerification {
+            id: &verification.id.to_string(),
+            identifier: &verification.identifier,
+            value: &verification.value,
+            expiresAt: verification.expires_at.naive_utc(),
+            createdAt: verification.created_at.naive_utc(),
+            updatedAt: verification.updated_at.naive_utc(),
+        };
 
-impl AuthDatabase for MysqlDatabase {}
+        let mut conn = self.pool.get()?;
+
+        diesel::insert_into(verification::table)
+            .values(&new_verification)
+            .execute(&mut conn)?;
+
+        Ok(())
+    }
+}

@@ -1,13 +1,13 @@
-mod oauth;
+mod callback;
 mod password;
 mod session;
-mod signin;
-mod signout;
-mod signup;
+mod sign_in;
+mod sign_out;
+mod sign_up;
 
-pub use oauth::*;
+pub use callback::*;
 pub use password::*;
 pub use session::*;
-pub use signin::*;
-pub use signout::*;
-pub use signup::*;
+pub use sign_in::*;
+pub use sign_out::*;
+pub use sign_up::*;

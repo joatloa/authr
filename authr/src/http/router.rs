@@ -5,14 +5,16 @@ use crate::http::handlers;
 pub fn config(cfg: &mut ServiceConfig) {
     cfg.service(
         web::scope("/auth")
+            // ----- Email/Password
             .service(handlers::sign_up)
-            .service(handlers::sign_in)
+            .service(handlers::sign_in_email)
+            // ----- Oauth2
+            .service(handlers::sign_in_social)
+            .service(handlers::callback)
+            // ----- Other
             .service(handlers::sign_out)
             .service(handlers::session)
             .service(handlers::forgot_password)
-            .service(handlers::reset_password)
-            .service(handlers::provider)
-            .service(handlers::provider_callback)
-            .service(handlers::link_provider),
+            .service(handlers::reset_password),
     );
 }
