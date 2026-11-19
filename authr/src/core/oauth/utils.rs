@@ -1,13 +1,26 @@
+use actix_web::HttpRequest;
 use url::Url;
 
-use crate::core::error::AuthrError;
+use crate::core::{auth::BaseUrl, error::AuthrError};
 
-pub fn get_provider_callback_url(base_url: &str, provider_id: &str) -> Result<Url, AuthrError> {
-    let mut url = Url::parse(base_url).map_err(|_| AuthrError::Internal)?;
+pub fn get_provider_callback_url(
+    base_url: &BaseUrl,
+    base_path: &str,
+    _req: &HttpRequest,
+    provider_id: &str,
+) -> Result<Url, AuthrError> {
+    let base = match base_url {
+        BaseUrl::Link { host } => host.clone(),
+        BaseUrl::List { .. } => unimplemented!(),
+    };
 
-    url.set_path(&format!("/api/auth/{provider_id}/callback"));
-    url.set_query(None);
-    url.set_fragment(None);
+    let mut url = Url::parse(&base).map_err(|_| AuthrError::Internal)?;
+
+    url.set_path(&format!(
+        "{}/callback/{}",
+        base_path.trim_end_matches('/'),
+        provider_id
+    ));
 
     Ok(url)
 }

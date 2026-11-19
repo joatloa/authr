@@ -1,25 +1,12 @@
-use std::collections::HashMap;
-
 use argon2::Argon2;
 
-use crate::core::oauth::Provider;
-#[cfg(feature = "mysql")]
-use crate::database::adapters::MysqlDatabase;
+use crate::core::auth::AuthrConfig;
+use crate::database::adapter::DieselDatabase;
 
-pub struct ProviderRegistry(pub HashMap<String, Provider>);
-
-impl ProviderRegistry {
-    pub fn get(&self, id: &str) -> Option<&Provider> {
-        self.0.get(id)
-    }
-}
-
+// ----- Providers
 pub struct AuthrData {
-    pub base_url: String,
-    pub providers: ProviderRegistry,
-
-    #[cfg(feature = "mysql")]
-    pub database: MysqlDatabase,
-
+    #[cfg(any(feature = "mysql", feature = "postgres", feature = "sqlite"))]
+    pub database: DieselDatabase,
+    pub config: AuthrConfig,
     pub argon: Argon2<'static>,
 }

@@ -19,20 +19,42 @@ pub enum AuthrError {
     UserNotFound,
 
     // -------------------- Database --------------------
-    #[error("Failed to find user")]
-    UserLookupFailed,
+    // Users
     #[error("Failed to create user")]
     UserCreationFailed,
+    #[error("Failed to find user")]
+    UserLookupFailed,
+    #[error("Failed to update user")]
+    UserUpdateFailed,
+    #[error("Failed to delete user")]
+    UserDeletionFailed,
+    // Accounts
     #[error("Failed to create account")]
     AccountCreationFailed,
     #[error("Failed to find account")]
     AccountLookupFailed,
+    #[error("Failed to update account")]
+    AccountUpdateFailed,
+    #[error("Failed to delete account")]
+    AccountDeletionFailed,
+    // Sessions
     #[error("Failed to create session")]
     SessionCreationFailed,
+    #[error("Failed to find session")]
+    SessionLookupFailed,
+    #[error("Failed to update session")]
+    SessionUpdateFailed,
     #[error("Failed to delete session")]
     SessionDeletionFailed,
+    // Verification
     #[error("Failed to create verification")]
     VerificationCreationFailed,
+    #[error("Failed to find verification")]
+    VerificationLookupFailed,
+    #[error("Failed to update verification")]
+    VerificationUpdateFailed,
+    #[error("Failed to delete verification")]
+    VerificationDeletionFailed,
     #[error("Failed to consume verification")]
     VerificationConsumptionFailed,
 
@@ -51,10 +73,6 @@ pub enum AuthrError {
     OAuthTokenExchangeFailed,
     #[error("OAuth user information retrieval failed")]
     OAuthUserInfoFailed,
-    #[error("Invalid OAuth state")]
-    InvalidOAuthState,
-    #[error("OAuth transaction expired")]
-    OAuthTransactionExpired,
 
     // -------------------- General --------------------
     #[error("Internal error")]

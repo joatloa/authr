@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, post, web};
+use actix_web::{HttpRequest, HttpResponse, http::header, post, web};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -12,10 +12,10 @@ use crate::{
             types::AuthorizationParams,
             utils::{generate_pkce_challenge, get_provider_callback_url},
         },
-        types::Verification,
+        types::{Session, Verification},
         utils::{generate_random_value, hash_password, verify_password},
     },
-    database::store::{AccountsStore, SessionsStore, UsersStore, VerificationStore},
+    database::store::{AccountQuery, AuthDatabase, UserQuery},
     http::utils::get_session_cookie,
 };
 
@@ -37,6 +37,7 @@ fn default_remember_me() -> bool {
 
 #[post("/sign-in/email")]
 pub async fn sign_in_email(
+    req: HttpRequest,
     data: web::Data<AuthrData>,
     body: web::Json<SigninEmailRequest>,
 ) -> Result<HttpResponse, AuthrError> {
@@ -49,7 +50,7 @@ pub async fn sign_in_email(
     let email = email.trim().to_lowercase();
 
     // ----- Find the user.
-    let user = match data.database.find_user_by_email(&email).await? {
+    let user = match data.database.find_user(UserQuery::Email(&email)).await? {
         Some(user) => user,
         None => {
             // Hash password to prevent timing attacks from revealing valid email addresses
@@ -66,7 +67,10 @@ pub async fn sign_in_email(
     // ----- Find the `credential` account for the user
     let account = match data
         .database
-        .find_account("credential", &user.id.to_string())
+        .find_account(AccountQuery::Provider {
+            provider_id: "credential",
+            account_id: &user.id.to_string(),
+        })
         .await?
     {
         Some(account) => account,
@@ -98,7 +102,21 @@ pub async fn sign_in_email(
     // ----- Create the session for the user
     let session = data
         .database
-        .create_session(&user.id.to_string(), remember_me)
+        .create_session(
+            Session {
+                id: Uuid::new_v4(),
+                user_id: user.id,
+                token: generate_random_value(),
+                ip_address: req.peer_addr().map(|p| p.ip().to_string()),
+                user_agent: req
+                    .headers()
+                    .get(header::USER_AGENT)
+                    .and_then(|ua| ua.to_str().ok())
+                    .map(String::from),
+                ..Default::default()
+            },
+            remember_me,
+        )
         .await?;
 
     // ----- Give Response
@@ -142,6 +160,7 @@ struct OAuthTransaction {
 
 #[post("/sign-in/social")]
 pub async fn sign_in_social(
+    req: HttpRequest,
     data: web::Data<AuthrData>,
     body: web::Json<SigninSocialRequest>,
 ) -> Result<HttpResponse, AuthrError> {
@@ -153,11 +172,11 @@ pub async fn sign_in_social(
     } = body.into_inner();
 
     // ----- Find the provider
-    let Some(provider) = data.providers.get(&provider) else {
+    let Some(provider) = data.config.social_providers.get(&provider) else {
         return Err(AuthrError::ProviderNotFound);
     };
 
-    // ----- Build a transaction value for the transaction
+    // ----- Build values for Oauth
     // Generate state and PKCE values.
     let state = generate_random_value();
     let code_verifier = generate_random_value();
@@ -188,17 +207,24 @@ pub async fn sign_in_social(
 
     // ----- Redirect to the OAuth provider
     // Build the callback URL registered with the OAuth provider.
-    let redirect_uri = get_provider_callback_url(&data.base_url, provider.id())?;
+    let redirect_uri = get_provider_callback_url(
+        &data.config.base_url,
+        &data.config.base_path,
+        &req,
+        provider.id(),
+    )?;
 
     // Use custom scopes if provided; otherwise use the provider defaults.
     let scopes = scopes.clone().unwrap_or_else(|| provider.scopes().to_vec());
 
-    let authorization_url = provider.authorization_url(AuthorizationParams {
-        state,
-        code_challenge,
-        redirect_uri,
-        scopes,
-    })?;
+    let authorization_url = provider
+        .create_authorization_url(AuthorizationParams {
+            state,
+            code_challenge,
+            redirect_uri,
+            scopes,
+        })
+        .await?;
 
     // ----- Give Response
     let mut response = HttpResponse::Ok();

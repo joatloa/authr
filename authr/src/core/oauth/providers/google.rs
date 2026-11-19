@@ -91,10 +91,16 @@ impl OAuthProvider for GoogleProvider {
     fn id(&self) -> &'static str {
         "google"
     }
+    fn name(&self) -> &'static str {
+        "Google"
+    }
     fn scopes(&self) -> &[String] {
         &self.scopes
     }
-    fn authorization_url(&self, params: AuthorizationParams) -> Result<Url, AuthrError> {
+    async fn create_authorization_url(
+        &self,
+        params: AuthorizationParams,
+    ) -> Result<Url, AuthrError> {
         let mut url = Url::parse(AUTHORIZATION_URL).map_err(|_| AuthrError::Internal)?;
 
         {
@@ -114,7 +120,7 @@ impl OAuthProvider for GoogleProvider {
 
         Ok(url)
     }
-    async fn exchange_code(
+    async fn validate_authorization_code(
         &self,
         params: TokenExchangeParams,
     ) -> Result<TokenResponse, AuthrError> {
@@ -131,32 +137,16 @@ impl OAuthProvider for GoogleProvider {
             ])
             .send()
             .await
-            .map_err(|_| AuthrError::Internal)?
+            .map_err(|_| AuthrError::OAuthTokenExchangeFailed)?
             .error_for_status()
-            .map_err(|_| AuthrError::Internal)?
+            .map_err(|_| AuthrError::OAuthTokenExchangeFailed)?
             .json::<GoogleTokenResponse>()
             .await
-            .map_err(|_| AuthrError::Internal)?;
+            .map_err(|_| AuthrError::OAuthTokenExchangeFailed)?;
 
         Ok(Self::build_token_response(response, None))
     }
-    async fn get_user_info(&self, tokens: &TokenResponse) -> Result<ProviderUser, AuthrError> {
-        let user = self
-            .http
-            .get(USER_INFO_URL)
-            .bearer_auth(&tokens.access_token)
-            .send()
-            .await
-            .map_err(|_| AuthrError::Internal)?
-            .error_for_status()
-            .map_err(|_| AuthrError::Internal)?
-            .json::<GoogleUserInfo>()
-            .await
-            .map_err(|_| AuthrError::Internal)?;
-
-        Ok(user.into())
-    }
-    async fn refresh_token(&self, refresh_token: &str) -> Result<TokenResponse, AuthrError> {
+    async fn refresh_access_token(&self, refresh_token: &str) -> Result<TokenResponse, AuthrError> {
         let response = self
             .http
             .post(TOKEN_URL)
@@ -168,16 +158,32 @@ impl OAuthProvider for GoogleProvider {
             ])
             .send()
             .await
-            .map_err(|_| AuthrError::Internal)?
+            .map_err(|_| AuthrError::OAuthTokenExchangeFailed)?
             .error_for_status()
-            .map_err(|_| AuthrError::Internal)?
+            .map_err(|_| AuthrError::OAuthTokenExchangeFailed)?
             .json::<GoogleTokenResponse>()
             .await
-            .map_err(|_| AuthrError::Internal)?;
+            .map_err(|_| AuthrError::OAuthTokenExchangeFailed)?;
 
         Ok(Self::build_token_response(
             response,
             Some(refresh_token.to_owned()),
         ))
+    }
+    async fn get_user_info(&self, tokens: &TokenResponse) -> Result<ProviderUser, AuthrError> {
+        let user = self
+            .http
+            .get(USER_INFO_URL)
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .await
+            .map_err(|_| AuthrError::OAuthUserInfoFailed)?
+            .error_for_status()
+            .map_err(|_| AuthrError::OAuthUserInfoFailed)?
+            .json::<GoogleUserInfo>()
+            .await
+            .map_err(|_| AuthrError::OAuthUserInfoFailed)?;
+
+        Ok(user.into())
     }
 }

@@ -34,6 +34,7 @@ rand = "0.8"
 hmac = "0.12"
 sha2 = "0.11.1"
 base64 = "0.22"
+hkdf = "0.13.0"
 
 # OAuth / OpenID Connect
 oauth2 = "5"
@@ -50,6 +51,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 email_address = "0.2.9"
+tracing = "0.1.44"
 
 [features]
 default = ["mysql"]

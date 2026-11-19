@@ -146,6 +146,7 @@ impl From<VerificationRow> for Verification {
 
 #[derive(Insertable)]
 #[diesel(table_name = user)]
+#[diesel(treat_none_as_default_value = false)]
 pub struct NewUser<'a> {
     pub id: &'a str,
     pub name: &'a str,
@@ -158,6 +159,7 @@ pub struct NewUser<'a> {
 
 #[derive(Insertable)]
 #[diesel(table_name = account)]
+#[diesel(treat_none_as_default_value = false)]
 pub struct NewAccount<'a> {
     pub id: &'a str,
     pub userId: &'a str,
@@ -176,6 +178,7 @@ pub struct NewAccount<'a> {
 
 #[derive(Insertable)]
 #[diesel(table_name = session)]
+#[diesel(treat_none_as_default_value = false)]
 pub struct NewSession<'a> {
     pub id: &'a str,
     pub userId: &'a str,
@@ -189,6 +192,7 @@ pub struct NewSession<'a> {
 
 #[derive(Insertable)]
 #[diesel(table_name = verification)]
+#[diesel(treat_none_as_default_value = false)]
 pub struct NewVerification<'a> {
     pub id: &'a str,
     pub identifier: &'a str,

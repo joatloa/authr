@@ -1,4 +1,4 @@
-pub mod adapters;
+pub mod adapter;
 pub mod migrations;
 pub mod models;
 pub mod schema;

@@ -15,7 +15,7 @@ use crate::{
         },
         types::{Account, User},
     },
-    database::store::{AccountsStore, SessionsStore, UsersStore, VerificationStore},
+    database::store::AuthDatabase,
     http::utils::get_session_cookie,
 };
 

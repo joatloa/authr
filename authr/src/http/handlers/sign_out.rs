@@ -6,7 +6,9 @@ use actix_web::{
 use serde::Deserialize;
 
 use crate::{
-    core::auth::AuthrData, database::store::SessionsStore, http::utils::SESSION_COOKIE_NAME,
+    core::auth::AuthrData,
+    database::store::{AuthDatabase, SessionQuery},
+    http::utils::SESSION_COOKIE_NAME,
 };
 
 #[derive(Debug, Deserialize)]
@@ -43,7 +45,11 @@ pub async fn sign_out(
 
     // ----- Revoke the session
     if let Some(token) = session_token {
-        if let Err(error) = data.database.delete_session(&token).await {
+        if let Err(error) = data
+            .database
+            .delete_session(SessionQuery::Token(&token))
+            .await
+        {
             eprintln!("Failed to delete session: {error}");
             // We still need to delete the cookie so we don't return an error
         }

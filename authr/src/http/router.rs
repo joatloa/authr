@@ -10,7 +10,7 @@ pub fn config(cfg: &mut ServiceConfig) {
             .service(handlers::sign_in_email)
             // ----- Oauth2
             .service(handlers::sign_in_social)
-            .service(handlers::callback)
+            // .service(handlers::callback)
             // ----- Other
             .service(handlers::sign_out),
     );

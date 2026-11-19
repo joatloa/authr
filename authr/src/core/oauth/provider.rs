@@ -16,15 +16,27 @@ pub enum Provider {
 
 #[async_trait]
 pub trait OAuthProvider: Send + Sync {
+    /// Returns the provider's unique identifier.
     fn id(&self) -> &'static str;
+    /// Returns the provider's display name.
+    fn name(&self) -> &'static str;
+    /// Returns the default scopes requested from the provider.
     fn scopes(&self) -> &[String];
-    fn authorization_url(&self, params: AuthorizationParams) -> Result<Url, AuthrError>;
-    async fn exchange_code(&self, params: TokenExchangeParams)
-    -> Result<TokenResponse, AuthrError>;
+    /// Creates the authorization URL used to redirect the user to the provider.
+    async fn create_authorization_url(
+        &self,
+        params: AuthorizationParams,
+    ) -> Result<Url, AuthrError>;
+    /// Exchanges an authorization code for OAuth tokens.
+    async fn validate_authorization_code(
+        &self,
+        params: TokenExchangeParams,
+    ) -> Result<TokenResponse, AuthrError>;
+    /// Refreshes an expired access token.
+    async fn refresh_access_token(&self, refresh_token: &str) -> Result<TokenResponse, AuthrError>;
+    /// Retrieves and validates the authenticated user's profile.
     async fn get_user_info(&self, tokens: &TokenResponse) -> Result<ProviderUser, AuthrError>;
-    async fn refresh_token(&self, refresh_token: &str) -> Result<TokenResponse, AuthrError>;
 }
-
 // ----- OAuthProvider implementation foor Provider
 macro_rules! delegate_provider {
     ($self:expr, $method:ident ( $($arg:expr),* )) => {
@@ -33,27 +45,34 @@ macro_rules! delegate_provider {
         }
     };
 }
+
 #[async_trait]
 impl OAuthProvider for Provider {
     fn id(&self) -> &'static str {
         delegate_provider!(self, id())
     }
+    fn name(&self) -> &'static str {
+        delegate_provider!(self, name())
+    }
     fn scopes(&self) -> &[String] {
         delegate_provider!(self, scopes())
     }
-    fn authorization_url(&self, params: AuthorizationParams) -> Result<Url, AuthrError> {
-        delegate_provider!(self, authorization_url(params))
+    async fn create_authorization_url(
+        &self,
+        params: AuthorizationParams,
+    ) -> Result<Url, AuthrError> {
+        delegate_provider!(self, create_authorization_url(params)).await
     }
-    async fn exchange_code(
+    async fn validate_authorization_code(
         &self,
         params: TokenExchangeParams,
     ) -> Result<TokenResponse, AuthrError> {
-        delegate_provider!(self, exchange_code(params)).await
+        delegate_provider!(self, validate_authorization_code(params)).await
+    }
+    async fn refresh_access_token(&self, refresh_token: &str) -> Result<TokenResponse, AuthrError> {
+        delegate_provider!(self, refresh_access_token(refresh_token)).await
     }
     async fn get_user_info(&self, tokens: &TokenResponse) -> Result<ProviderUser, AuthrError> {
         delegate_provider!(self, get_user_info(tokens)).await
-    }
-    async fn refresh_token(&self, refresh_token: &str) -> Result<TokenResponse, AuthrError> {
-        delegate_provider!(self, refresh_token(refresh_token)).await
     }
 }

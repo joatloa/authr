@@ -5,6 +5,10 @@ edition = "2024"
 
 [dependencies]
 authr = { version = "0.1.0", path = "../../authr", features = ["mysql"] }
+
 actix-web = { workspace = true }
 diesel = { workspace = true }
+
 dotenvy = "0.15"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
