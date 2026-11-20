@@ -25,7 +25,15 @@ pub struct SignOutRequest {
     state: Option<String>,
 }
 
-#[tracing::instrument(name = "auth.sign_out", skip_all)]
+#[tracing::instrument(
+    name = "auth.sign_out",
+    skip_all,
+    fields(
+        disable_redirect = body.disable_redirect,
+        has_callback_url = body.callback_url.is_some(),
+        has_state = body.state.is_some()
+    )
+)]
 pub async fn sign_out<D: AuthDatabase + 'static>(
     req: HttpRequest,
     data: web::Data<AuthrData<D>>,
@@ -42,12 +50,32 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
         .cookie(SESSION_COOKIE_NAME)
         .map(|cookie| cookie.value().to_string());
 
+    if session_token.is_some() {
+        tracing::debug!("Session cookie found in sign-out request");
+    } else {
+        tracing::debug!("Sign-out requested without a session cookie");
+    }
+
     // ----- Read current session
     let current_session = if let Some(token) = &session_token {
         match data.database.find_session(SessionQuery::Token(token)).await {
-            Ok(session) => session,
+            Ok(Some(session)) => {
+                tracing::debug!(
+                    session_id = %session.id,
+                    user_id = %session.user_id,
+                    "Current session found"
+                );
+                Some(session)
+            }
+            Ok(None) => {
+                tracing::debug!("No matching session found");
+                None
+            }
             Err(error) => {
-                tracing::error!(error = %error, "Failed to read session from database");
+                tracing::error!(
+                    error = %error,
+                    "Failed to read session from database"
+                );
                 None
             }
         }
@@ -62,10 +90,17 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
             .delete_session(SessionQuery::Token(token))
             .await
         {
-            Ok(true) => tracing::info!("Session revoked successfully"),
-            Ok(false) => tracing::debug!("No matching session found"),
+            Ok(true) => {
+                tracing::info!("Session revoked successfully");
+            }
+            Ok(false) => {
+                tracing::debug!("No matching session found to revoke");
+            }
             Err(error) => {
-                tracing::error!(error = %error, "Failed to revoke session");
+                tracing::error!(
+                    error = %error,
+                    "Failed to revoke session"
+                );
             }
         }
     }
@@ -80,8 +115,15 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
 
     cookie.make_removal();
 
+    tracing::debug!("Session cookie scheduled for removal");
+
     // ----- Provider logout
     let provider_logout_url = if let Some(session) = current_session {
+        tracing::debug!(
+            user_id = %session.user_id,
+            "Attempting provider logout"
+        );
+
         create_provider_logout_url(
             &req,
             &data,
@@ -91,6 +133,7 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
         )
         .await
     } else {
+        tracing::debug!("Skipping provider logout: no active session");
         None
     };
 
@@ -101,7 +144,10 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
         let should_redirect = !disable_redirect;
 
         if should_redirect {
+            tracing::info!("Redirecting to provider logout");
             response.insert_header((header::LOCATION, url.as_str()));
+        } else {
+            tracing::debug!("Returning provider logout URL without redirect");
         }
 
         return response.cookie(cookie).json(json!({
@@ -111,12 +157,20 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
         }));
     }
 
+    tracing::info!("Local sign-out completed");
+
     response.cookie(cookie).json(json!({
         "success": true
     }))
 }
 
 // ----- Provider logout
+
+#[tracing::instrument(
+    name = "auth.provider_logout",
+    skip_all,
+    fields(user_id = %user_id),
+)]
 async fn create_provider_logout_url<D: AuthDatabase + 'static>(
     req: &HttpRequest,
     data: &web::Data<AuthrData<D>>,
@@ -130,9 +184,15 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
         .find_accounts(AccountQuery::UserId(&user_id.to_string()))
         .await
     {
-        Ok(accounts) => accounts,
+        Ok(accounts) => {
+            tracing::debug!(account_count = accounts.len(), "Retrieved linked accounts");
+            accounts
+        }
         Err(error) => {
-            tracing::error!(error = %error, "Failed to find user accounts");
+            tracing::error!(
+                error = %error,
+                "Failed to find user accounts"
+            );
             return None;
         }
     };
@@ -148,29 +208,52 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
         })
         .collect();
 
+    tracing::debug!(
+        supported_account_count = accounts.len(),
+        "Filtered accounts supporting provider logout"
+    );
+
     // ----- Sort by most recently updated
     accounts.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 
     // ----- Resolve post-logout redirect URI
-    let post_logout_redirect_uri = match callback_url.as_deref() {
+    let post_logout_redirect_uri = match callback_url {
         Some(callback_url) => {
             let base_url = match get_base_url(&data.config.base_url, req) {
-                Ok(url) => url,
+                Ok(url) => {
+                    tracing::debug!(%url, "Resolved base URL for provider logout");
+                    url
+                }
                 Err(error) => {
-                    tracing::error!(error = %error, "Failed to resolve base URL");
+                    tracing::error!(
+                        error = %error,
+                        "Failed to resolve base URL"
+                    );
                     return None;
                 }
             };
 
             match base_url.join(callback_url) {
-                Ok(url) => Some(url),
+                Ok(url) => {
+                    tracing::debug!(
+                        %url,
+                        "Resolved post-logout redirect URI"
+                    );
+                    Some(url)
+                }
                 Err(error) => {
-                    tracing::error!(error = %error, "Invalid logout callback URL");
+                    tracing::error!(
+                        error = %error,
+                        "Invalid logout callback URL"
+                    );
                     return None;
                 }
             }
         }
-        None => None,
+        None => {
+            tracing::debug!("No post-logout callback URL provided");
+            None
+        }
     };
 
     // ----- Generate provider logout URL
@@ -182,8 +265,17 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
         }
 
         let Some(provider) = data.config.social_providers.get(&account.provider_id) else {
+            tracing::debug!(
+                provider = %account.provider_id,
+                "Provider configuration not found"
+            );
             continue;
         };
+
+        tracing::debug!(
+            provider = %account.provider_id,
+            "Attempting provider logout URL generation"
+        );
 
         match provider
             .create_end_session_url(
@@ -193,8 +285,19 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
             )
             .await
         {
-            Ok(Some(url)) => return Some(url.to_string()),
-            Ok(None) => {}
+            Ok(Some(url)) => {
+                tracing::info!(
+                    provider = %account.provider_id,
+                    "Provider logout URL generated successfully"
+                );
+                return Some(url.to_string());
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    provider = %account.provider_id,
+                    "Provider does not provide a logout URL"
+                );
+            }
             Err(error) => {
                 tracing::error!(
                     error = %error,
@@ -204,6 +307,8 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
             }
         }
     }
+
+    tracing::debug!("No provider logout URL could be generated");
 
     None
 }

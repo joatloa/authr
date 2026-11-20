@@ -33,6 +33,12 @@ fn default_remember_me() -> bool {
     true
 }
 
+#[tracing::instrument(
+    name = "auth.sign_in_email",
+    skip_all,
+    fields(remember_me = body.remember_me),
+    err
+)]
 pub async fn sign_in_email<D: AuthDatabase + 'static>(
     req: HttpRequest,
     data: web::Data<AuthrData<D>>,
@@ -43,24 +49,27 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
         password,
         remember_me,
     } = body.into_inner();
+
     let email = email.trim().to_lowercase();
 
     // ----- Check request body
     if !EmailAddress::is_valid(&email) {
+        tracing::debug!("Email sign-in rejected due to invalid email");
         return Err(AuthrError::InvalidEmail);
     }
+
     if password.len() < data.config.email_and_password.min_password_length
         || password.len() > data.config.email_and_password.max_password_length
     {
+        tracing::debug!("Email sign-in rejected due to invalid password length");
         return Err(AuthrError::InvalidPassword);
     }
 
-    // ----- Find the user.
+    // ----- Find the user
     let user = match data.database.find_user(UserQuery::Email(&email)).await? {
         Some(user) => user,
         None => {
-            // Hash password to prevent timing attacks from revealing valid email addresses
-            // By hashing passwords for invalid emails, we ensure consistent response times
+            // Hash password to prevent timing attacks from revealing valid email addresses.
             if let Err(err) = hash_password_async(data.argon.clone(), password).await {
                 tracing::error!(
                     error = %err,
@@ -68,11 +77,12 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
                 );
             }
 
+            tracing::debug!("Email sign-in failed: user not found");
             return Err(AuthrError::InvalidCredentials);
         }
     };
 
-    // ----- Find the `credential` account for the user
+    // ----- Find the credential account for the user
     let credential_account = match data
         .database
         .find_account(AccountQuery::Provider {
@@ -90,30 +100,38 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
                 );
             }
 
+            tracing::debug!("Email sign-in failed: credential account not found");
             return Err(AuthrError::InvalidCredentials);
         }
     };
 
-    // ----- Check the received password against the `credential` account's password
-    let password_hash = credential_account
-        .password_hash
-        .ok_or(AuthrError::InvalidCredentials)?;
+    // ----- Check the received password
+    let Some(password_hash) = credential_account.password_hash else {
+        tracing::debug!("Email sign-in failed: credential account has no password hash");
+        return Err(AuthrError::InvalidCredentials);
+    };
+
     let valid_password = verify_password_async(password, password_hash).await?;
+
     if !valid_password {
+        tracing::debug!("Email sign-in failed: password mismatch");
         return Err(AuthrError::InvalidCredentials);
     }
 
-    // ----- Create the session for the user
+    // ----- Create the session
     let ip_address = req.peer_addr().map(|p| p.ip().to_string());
     let user_agent = req
         .headers()
         .get(header::USER_AGENT)
         .and_then(|ua| ua.to_str().ok())
         .map(String::from);
+
     let session = data
         .database
         .create_session(Session::new(user.id, ip_address, user_agent), remember_me)
         .await?;
+
+    tracing::info!("User signed in successfully");
 
     // ----- Give Response
     Ok(HttpResponse::Ok()
@@ -131,6 +149,7 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
 }
 
 // -------------------- OAuth2 --------------------
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SigninSocialRequest {
@@ -140,6 +159,7 @@ pub struct SigninSocialRequest {
     disable_redirect: bool,
     scopes: Option<Vec<String>>,
 }
+
 fn default_redirect() -> bool {
     false
 }
@@ -149,7 +169,9 @@ fn default_redirect() -> bool {
     skip_all,
     fields(
         provider = %body.provider,
-        redirect = body.disable_redirect
+        disable_redirect = body.disable_redirect,
+        has_callback_url = body.callback_url.is_some(),
+        has_custom_scopes = body.scopes.is_some()
     ),
     err
 )]
@@ -200,16 +222,27 @@ pub async fn sign_in_social<D: AuthDatabase + 'static>(
         ))
         .await?;
 
+    tracing::debug!("OAuth transaction stored successfully");
+
     // ----- Build callback URL
     let redirect_uri = get_provider_callback_url(
         &data.config.base_url,
         &data.config.base_path,
         &req,
         provider.id(),
-    )?;
+    )
+    .map_err(|err| {
+        tracing::error!(
+            error = %err,
+            "Failed to build OAuth callback URL"
+        );
+        err
+    })?;
 
     // ----- Resolve scopes
     let scopes = scopes.unwrap_or_else(|| provider.scopes().to_vec());
+
+    tracing::debug!(scope_count = scopes.len(), "Resolved OAuth scopes");
 
     // ----- Create authorization URL
     let authorization_url = provider
@@ -219,7 +252,19 @@ pub async fn sign_in_social<D: AuthDatabase + 'static>(
             redirect_uri,
             scopes,
         })
-        .await?;
+        .await
+        .map_err(|err| {
+            tracing::error!(
+                error = %err,
+                "Failed to create OAuth authorization URL"
+            );
+            err
+        })?;
+
+    tracing::info!(
+        provider = %provider.id(),
+        "OAuth authorization URL generated successfully"
+    );
 
     // ----- Give Response
     let mut response = HttpResponse::Ok();

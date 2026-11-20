@@ -15,10 +15,9 @@ use authr::{
     http::router,
 };
 
-use crate::common::TestDatabase;
+use crate::common::{TestDatabase, init_tracing};
 
 // ----- Test setup
-
 fn config() -> AuthrConfig {
     AuthrConfig {
         app_name: "Authr Tests".to_string(),
@@ -54,7 +53,7 @@ macro_rules! test_app {
 macro_rules! sign_up_user {
     ($app:expr) => {{
         let request = test::TestRequest::post()
-            .uri("/api/auth/sign-up/email")
+            .uri("/api/auth/sign-up")
             .set_json(json!({
                 "name": "Test User",
                 "email": "test@example.com",
@@ -71,6 +70,8 @@ macro_rules! sign_up_user {
 #[actix_web::test]
 async fn sign_in_creates_session_and_sets_cookie() {
     // ----- Setup
+    init_tracing();
+
     let database = TestDatabase::default();
     let app = test_app!(database);
 
@@ -125,6 +126,8 @@ async fn sign_in_creates_session_and_sets_cookie() {
 #[actix_web::test]
 async fn sign_in_stores_user_agent() {
     // ----- Setup
+    init_tracing();
+
     let database = TestDatabase::default();
     let app = test_app!(database);
 
@@ -162,6 +165,8 @@ async fn sign_in_stores_user_agent() {
 #[actix_web::test]
 async fn sign_in_respects_remember_me() {
     // ----- Setup
+    init_tracing();
+
     let database = TestDatabase::default();
     let app = test_app!(database);
 
@@ -199,6 +204,8 @@ async fn sign_in_respects_remember_me() {
 #[actix_web::test]
 async fn sign_in_with_invalid_password_fails() {
     // ----- Setup
+    init_tracing();
+
     let database = TestDatabase::default();
     let app = test_app!(database);
 
@@ -223,6 +230,8 @@ async fn sign_in_with_invalid_password_fails() {
 #[actix_web::test]
 async fn sign_in_with_nonexistent_email_fails() {
     // ----- Setup
+    init_tracing();
+
     let database = TestDatabase::default();
     let app = test_app!(database);
 
@@ -244,6 +253,8 @@ async fn sign_in_with_nonexistent_email_fails() {
 #[actix_web::test]
 async fn sign_in_with_invalid_email_fails() {
     // ----- Setup
+    init_tracing();
+
     let database = TestDatabase::default();
     let app = test_app!(database);
 
@@ -265,6 +276,8 @@ async fn sign_in_with_invalid_email_fails() {
 #[actix_web::test]
 async fn sign_in_with_short_password_fails() {
     // ----- Setup
+    init_tracing();
+
     let database = TestDatabase::default();
     let app = test_app!(database);
 

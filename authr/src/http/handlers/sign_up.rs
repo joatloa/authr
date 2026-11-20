@@ -52,7 +52,7 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
         remember_me,
     } = body.into_inner();
 
-    let email = email.to_lowercase();
+    let email = email.trim().to_lowercase();
 
     let should_return_generic_duplicate_response = !data.config.email_and_password.auto_sign_in;
     let should_skip_auto_sign_in = !data.config.email_and_password.auto_sign_in;
@@ -81,8 +81,7 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
     if db_user.is_some() {
         tracing::warn!(
             generic_response = should_return_generic_duplicate_response,
-            "Registration attempted with an existing email: {:?}",
-            email
+            "Registration attempted with an existing email"
         );
 
         if should_return_generic_duplicate_response {
@@ -100,7 +99,10 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
         .create_user(User::new(name.clone(), email.clone(), false, image.clone()))
         .await
     {
-        Ok(user) => user,
+        Ok(user) => {
+            tracing::info!(user_id = %user.id, "User registered successfully");
+            user
+        }
         Err(err) => {
             tracing::error!(
                 error = %err,
@@ -118,12 +120,32 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
     };
 
     // ----- Link created user with a credential account
-    data.database
+    if let Err(error) = data
+        .database
         .create_account(Account::new_credential(created_user.id, password_hash))
-        .await?;
+        .await
+    {
+        tracing::error!(
+            user_id = %created_user.id,
+            error = %error,
+            "Failed to create credential account"
+        );
+
+        return Err(error);
+    }
+
+    tracing::debug!(
+        user_id = %created_user.id,
+        "Credential account created successfully"
+    );
 
     // ----- Skip automatic sign-in
     if should_skip_auto_sign_in {
+        tracing::info!(
+            user_id = %created_user.id,
+            "Registration completed without automatic sign-in"
+        );
+
         return Ok(HttpResponse::Created().json(json!({
             "token": null,
             "user": {
@@ -143,15 +165,40 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
         .get(header::USER_AGENT)
         .and_then(|ua| ua.to_str().ok())
         .map(String::from);
-    let session = data
+
+    let session = match data
         .database
         .create_session(
             Session::new(created_user.id, ip_address, user_agent),
             remember_me,
         )
-        .await?;
+        .await
+    {
+        Ok(session) => {
+            tracing::debug!(
+                user_id = %created_user.id,
+                session_id = %session.id,
+                "Session created successfully"
+            );
+            session
+        }
+        Err(error) => {
+            tracing::error!(
+                user_id = %created_user.id,
+                error = %error,
+                "Failed to create session after registration"
+            );
+
+            return Err(error);
+        }
+    };
 
     // ----- Give response
+    tracing::info!(
+        user_id = %created_user.id,
+        "Registration completed successfully"
+    );
+
     Ok(HttpResponse::Created()
         .cookie(get_session_cookie(&session))
         .json(json!({
@@ -166,6 +213,8 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
         })))
 }
 
+// ----- Generic duplicate response
+
 async fn build_generic_duplicate_response<D: AuthDatabase + 'static>(
     data: web::Data<AuthrData<D>>,
     name: String,
@@ -179,6 +228,8 @@ async fn build_generic_duplicate_response<D: AuthDatabase + 'static>(
             "Dummy password hashing failed"
         );
     }
+
+    tracing::debug!("Returning generic registration response");
 
     let synthetic_user = User::new(name, email, false, image);
 

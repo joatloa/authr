@@ -14,7 +14,7 @@ use crate::{
         types::{Account, Session, User},
         utils::get_base_url,
     },
-    database::store::{AuthDatabase, UserQuery},
+    database::store::{AccountQuery, AuthDatabase, UserQuery},
     http::utils::get_session_cookie,
 };
 
@@ -29,7 +29,12 @@ pub struct OAuthCallbackQuery {
 #[tracing::instrument(
     name = "auth.oauth_callback",
     skip_all,
-    fields(provider = %path.as_str())
+    fields(
+        provider = %path.as_str(),
+        has_code = query.code.is_some(),
+        has_state = query.state.is_some()
+    ),
+    err
 )]
 pub async fn callback<D: AuthDatabase + 'static>(
     req: HttpRequest,
@@ -71,9 +76,12 @@ pub async fn callback<D: AuthDatabase + 'static>(
     if let Some(error) = error {
         tracing::warn!(
             provider = %provider_id,
-            error = %error,
-            description = ?error_description,
             "OAuth authorization failed"
+        );
+
+        tracing::debug!(
+            has_error_description = error_description.is_some(),
+            "Received OAuth authorization error response"
         );
 
         return Ok(redirect_error(&error, error_description));
@@ -81,48 +89,92 @@ pub async fn callback<D: AuthDatabase + 'static>(
 
     // ----- State Validation
     let Some(state) = state else {
+        tracing::warn!(
+            provider = %provider_id,
+            "OAuth callback received without state"
+        );
+
         return Ok(redirect_error("state_not_found", None));
     };
 
     // Retrieve and consume the OAuth transaction.
     let identifier = format!("oauth:{state}");
+
     let verification = match data.database.consume_verification(&identifier).await {
         Ok(Some(verification)) => verification,
-        Ok(None) => return Ok(redirect_error("invalid_state", None)),
+        Ok(None) => {
+            tracing::warn!(
+                provider = %provider_id,
+                "OAuth state not found or already consumed"
+            );
+
+            return Ok(redirect_error("invalid_state", None));
+        }
         Err(error) => {
-            tracing::error!(error = %error, "Failed to consume OAuth state");
+            tracing::error!(
+                error = %error,
+                "Failed to consume OAuth state"
+            );
+
             return Ok(redirect_error("invalid_state", None));
         }
     };
 
-    // Deserialize the OAuth transaction.
+    tracing::debug!("OAuth state consumed successfully");
+
+    // ----- Deserialize OAuth Transaction
     let transaction: OAuthTransaction = match serde_json::from_str(&verification.value) {
         Ok(transaction) => transaction,
         Err(error) => {
-            tracing::error!(error = %error, "Invalid OAuth transaction");
+            tracing::error!(
+                error = %error,
+                "Failed to deserialize OAuth transaction"
+            );
+
             return Ok(redirect_error("invalid_state", None));
         }
     };
 
-    // Make sure the transaction belongs to this provider and hasn't expired.
+    // ----- Validate OAuth Transaction
     if transaction.provider_id != provider_id {
+        tracing::warn!(
+            provider = %provider_id,
+            transaction_provider = %transaction.provider_id,
+            "OAuth provider mismatch"
+        );
+
         return Ok(redirect_error("provider_mismatch", None));
     }
 
     if verification.expires_at <= Utc::now() {
+        tracing::warn!(
+            provider = %provider_id,
+            "OAuth state has expired"
+        );
+
         return Ok(redirect_error("state_expired", None));
     }
 
     // ----- Provider Resolution
     let Some(provider) = data.config.social_providers.get(&provider_id) else {
+        tracing::warn!(
+            provider = %provider_id,
+            "OAuth provider is not configured"
+        );
+
         return Ok(redirect_error("provider_not_found", None));
     };
 
     let Some(code) = code else {
+        tracing::warn!(
+            provider = %provider_id,
+            "OAuth callback received without authorization code"
+        );
+
         return Ok(redirect_error("code_not_found", None));
     };
 
-    // Generate the same redirect URI used during authorization.
+    // ----- Build Callback URL
     let redirect_uri = match get_provider_callback_url(
         &data.config.base_url,
         &data.config.base_path,
@@ -131,7 +183,11 @@ pub async fn callback<D: AuthDatabase + 'static>(
     ) {
         Ok(url) => url,
         Err(error) => {
-            tracing::error!(error = %error, "Failed to create provider callback URL");
+            tracing::error!(
+                error = %error,
+                "Failed to create provider callback URL"
+            );
+
             return Ok(redirect_error("invalid_callback_url", None));
         }
     };
@@ -147,28 +203,53 @@ pub async fn callback<D: AuthDatabase + 'static>(
     {
         Ok(tokens) => tokens,
         Err(error) => {
-            tracing::error!(error = %error, "OAuth token exchange failed");
+            tracing::error!(
+                provider = %provider_id,
+                error = %error,
+                "OAuth token exchange failed"
+            );
+
             return Ok(redirect_error("token_exchange_failed", None));
         }
     };
+
+    tracing::debug!(
+        provider = %provider_id,
+        "OAuth token exchange completed successfully"
+    );
 
     // ----- User Resolution
     let provider_user = match provider.get_user_info(&tokens).await {
         Ok(user) => user,
         Err(error) => {
-            tracing::error!(error = %error, "Failed to retrieve provider user");
+            tracing::error!(
+                provider = %provider_id,
+                error = %error,
+                "Failed to retrieve provider user"
+            );
+
             return Ok(redirect_error("user_info_failed", None));
         }
     };
 
     if provider_user.email.is_none() {
+        tracing::warn!(
+            provider = %provider_id,
+            "OAuth provider did not return an email address"
+        );
+
         return Ok(redirect_error("email_not_found", None));
     }
 
     let user = match resolve_oauth_user(&data, &provider_id, &provider_user, &tokens).await {
         Ok(user) => user,
         Err(error) => {
-            tracing::error!(error = %error, "Failed to resolve OAuth user");
+            tracing::error!(
+                provider = %provider_id,
+                error = %error,
+                "Failed to resolve OAuth user"
+            );
+
             return Ok(redirect_error("account_linking_failed", None));
         }
     };
@@ -188,17 +269,36 @@ pub async fn callback<D: AuthDatabase + 'static>(
     {
         Ok(session) => session,
         Err(error) => {
-            tracing::error!(error = %error, "Failed to create session");
+            tracing::error!(
+                error = %error,
+                "Failed to create session"
+            );
+
             return Ok(redirect_error("session_creation_failed", None));
         }
     };
 
+    tracing::info!(
+        provider = %provider_id,
+        "User signed in successfully through OAuth"
+    );
+
     // ----- Application Redirect
     let Some(callback_url) = transaction.callback_url else {
+        tracing::warn!(
+            provider = %provider_id,
+            "OAuth transaction does not contain an application callback URL"
+        );
+
         return Ok(redirect_error("callback_url_not_found", None));
     };
 
     let cookie = get_session_cookie(&session);
+
+    tracing::debug!(
+        provider = %provider_id,
+        "Redirecting user to application callback URL"
+    );
 
     Ok(HttpResponse::Found()
         .append_header(("Location", callback_url))
@@ -206,6 +306,12 @@ pub async fn callback<D: AuthDatabase + 'static>(
         .finish())
 }
 
+#[tracing::instrument(
+    name = "auth.resolve_oauth_user",
+    skip_all,
+    fields(provider = %provider_id),
+    err
+)]
 async fn resolve_oauth_user<D: AuthDatabase + 'static>(
     data: &AuthrData<D>,
     provider_id: &str,
@@ -215,12 +321,17 @@ async fn resolve_oauth_user<D: AuthDatabase + 'static>(
     // ----- Existing Account
     if let Some(account) = data
         .database
-        .find_account(crate::database::store::AccountQuery::Provider {
+        .find_account(AccountQuery::Provider {
             provider_id,
             account_id: &provider_user.id,
         })
         .await?
     {
+        tracing::debug!(
+            provider = %provider_id,
+            "Existing OAuth account found"
+        );
+
         return data
             .database
             .find_user(UserQuery::Id(&account.user_id.to_string()))
@@ -233,18 +344,35 @@ async fn resolve_oauth_user<D: AuthDatabase + 'static>(
         .email
         .as_deref()
         .ok_or(AuthrError::InvalidEmail)?;
+
     let user = match data.database.find_user(UserQuery::Email(email)).await? {
-        Some(user) => user,
-        // If user doesn't exist create one
+        Some(user) => {
+            tracing::debug!(
+                provider = %provider_id,
+                "Existing user found for OAuth email"
+            );
+
+            user
+        }
+
+        // If user doesn't exist, create one.
         None => {
-            data.database
+            let user = data
+                .database
                 .create_user(User::new(
                     provider_user.name.clone().unwrap_or_default(),
                     email.to_string(),
                     provider_user.email_verified,
                     provider_user.image.clone(),
                 ))
-                .await?
+                .await?;
+
+            tracing::info!(
+                provider = %provider_id,
+                "Created user through OAuth sign-in"
+            );
+
+            user
         }
     };
 
@@ -264,6 +392,11 @@ async fn resolve_oauth_user<D: AuthDatabase + 'static>(
             tokens.id_token.clone(),
         ))
         .await?;
+
+    tracing::info!(
+        provider = %provider_id,
+        "OAuth account linked successfully"
+    );
 
     Ok(user)
 }
