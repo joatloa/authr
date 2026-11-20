@@ -1,7 +1,6 @@
 use actix_web::{HttpRequest, HttpResponse, http::header, post, web};
-use chrono::{Duration, Utc};
+use email_address::EmailAddress;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{
     core::{
@@ -13,7 +12,7 @@ use crate::{
             utils::{generate_pkce_challenge, get_provider_callback_url},
         },
         types::{Session, Verification},
-        utils::{generate_random_value, hash_password, verify_password},
+        utils::{generate_random_token, hash_password_async, verify_password_async},
     },
     database::store::{AccountQuery, AuthDatabase, UserQuery},
     http::utils::get_session_cookie,
@@ -49,23 +48,35 @@ pub async fn sign_in_email(
     } = body.into_inner();
     let email = email.trim().to_lowercase();
 
+    // ----- Check request body
+    if !EmailAddress::is_valid(&email) {
+        return Err(AuthrError::InvalidEmail);
+    }
+    if password.len() < data.config.email_and_password.min_password_length
+        || password.len() > data.config.email_and_password.max_password_length
+    {
+        return Err(AuthrError::InvalidPassword);
+    }
+
     // ----- Find the user.
     let user = match data.database.find_user(UserQuery::Email(&email)).await? {
         Some(user) => user,
         None => {
             // Hash password to prevent timing attacks from revealing valid email addresses
             // By hashing passwords for invalid emails, we ensure consistent response times
-            let _ = web::block(move || {
-                let _ = hash_password(&data.argon, &password);
-            })
-            .await;
+            if let Err(err) = hash_password_async(data.argon.clone(), password).await {
+                tracing::error!(
+                    error = %err,
+                    "Dummy password hashing failed"
+                );
+            }
 
             return Err(AuthrError::InvalidCredentials);
         }
     };
 
     // ----- Find the `credential` account for the user
-    let account = match data
+    let credential_account = match data
         .database
         .find_account(AccountQuery::Provider {
             provider_id: "credential",
@@ -75,48 +86,36 @@ pub async fn sign_in_email(
     {
         Some(account) => account,
         None => {
-            let _ = web::block(move || {
-                let _ = hash_password(&data.argon, &password);
-            })
-            .await;
+            if let Err(err) = hash_password_async(data.argon.clone(), password).await {
+                tracing::error!(
+                    error = %err,
+                    "Dummy password hashing failed"
+                );
+            }
 
             return Err(AuthrError::InvalidCredentials);
         }
     };
 
     // ----- Check the received password against the `credential` account's password
-    let Some(password_hash) = account.password_hash else {
-        return Err(AuthrError::InvalidCredentials);
-    };
-    let valid_password = match web::block(move || verify_password(&password, &password_hash)).await
-    {
-        Ok(Ok(valid)) => valid,
-        _ => {
-            return Err(AuthrError::Internal);
-        }
-    };
+    let password_hash = credential_account
+        .password_hash
+        .ok_or(AuthrError::InvalidCredentials)?;
+    let valid_password = verify_password_async(password, password_hash).await?;
     if !valid_password {
         return Err(AuthrError::InvalidCredentials);
     }
 
     // ----- Create the session for the user
+    let ip_address = req.peer_addr().map(|p| p.ip().to_string());
+    let user_agent = req
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|ua| ua.to_str().ok())
+        .map(String::from);
     let session = data
         .database
-        .create_session(
-            Session {
-                id: Uuid::new_v4(),
-                user_id: user.id,
-                token: generate_random_value(),
-                ip_address: req.peer_addr().map(|p| p.ip().to_string()),
-                user_agent: req
-                    .headers()
-                    .get(header::USER_AGENT)
-                    .and_then(|ua| ua.to_str().ok())
-                    .map(String::from),
-                ..Default::default()
-            },
-            remember_me,
-        )
+        .create_session(Session::new(user.id, ip_address, user_agent), remember_me)
         .await?;
 
     // ----- Give Response
@@ -158,6 +157,15 @@ struct OAuthTransaction {
     callback_url: Option<String>,
 }
 
+#[tracing::instrument(
+    name = "auth.sign_in_social",
+    skip_all,
+    fields(
+        provider = %body.provider,
+        redirect = body.redirect
+    ),
+    err
+)]
 #[post("/sign-in/social")]
 pub async fn sign_in_social(
     req: HttpRequest,
@@ -173,13 +181,13 @@ pub async fn sign_in_social(
 
     // ----- Find the provider
     let Some(provider) = data.config.social_providers.get(&provider) else {
+        tracing::warn!("Social sign-in requested with an unsupported provider");
         return Err(AuthrError::ProviderNotFound);
     };
 
-    // ----- Build values for Oauth
-    // Generate state and PKCE values.
-    let state = generate_random_value();
-    let code_verifier = generate_random_value();
+    // ----- Build values for OAuth
+    let state = generate_random_token();
+    let code_verifier = generate_random_token();
     let code_challenge = generate_pkce_challenge(&code_verifier);
 
     // Save the OAuth transaction so the callback handler can retrieve
@@ -190,23 +198,23 @@ pub async fn sign_in_social(
         callback_url: callback_url.clone(),
     };
 
-    let transaction_value =
-        serde_json::to_string(&transaction).map_err(|_| AuthrError::Internal)?;
+    let transaction_value = serde_json::to_string(&transaction).map_err(|err| {
+        tracing::error!(
+            error = %err,
+            "Failed to serialize OAuth transaction"
+        );
+        AuthrError::Internal
+    })?;
 
     // ----- Create a verification
-    let now = Utc::now();
-    let verification = Verification {
-        id: Uuid::new_v4(),
-        identifier: format!("oauth:{state}"),
-        value: transaction_value,
-        expires_at: now + Duration::minutes(10),
-        created_at: now,
-        updated_at: now,
-    };
-    data.database.create_verification(verification).await?;
+    data.database
+        .create_verification(Verification::new(
+            format!("oauth:{state}"),
+            transaction_value,
+        ))
+        .await?;
 
-    // ----- Redirect to the OAuth provider
-    // Build the callback URL registered with the OAuth provider.
+    // ----- Build callback URL
     let redirect_uri = get_provider_callback_url(
         &data.config.base_url,
         &data.config.base_path,
@@ -214,9 +222,10 @@ pub async fn sign_in_social(
         provider.id(),
     )?;
 
-    // Use custom scopes if provided; otherwise use the provider defaults.
-    let scopes = scopes.clone().unwrap_or_else(|| provider.scopes().to_vec());
+    // ----- Resolve scopes
+    let scopes = scopes.unwrap_or_else(|| provider.scopes().to_vec());
 
+    // ----- Create authorization URL
     let authorization_url = provider
         .create_authorization_url(AuthorizationParams {
             state,

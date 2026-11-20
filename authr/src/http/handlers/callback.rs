@@ -1,8 +1,6 @@
-use actix_web::{HttpResponse, Responder, get, web};
+use actix_web::{HttpRequest, HttpResponse, get, web};
 use chrono::Utc;
 use serde::Deserialize;
-use url::Url;
-use uuid::Uuid;
 
 use crate::{
     core::{
@@ -13,9 +11,10 @@ use crate::{
             types::{ProviderUser, TokenExchangeParams, TokenResponse},
             utils::get_provider_callback_url,
         },
-        types::{Account, User},
+        types::{Account, Session, User},
+        utils::get_base_url,
     },
-    database::store::AuthDatabase,
+    database::store::{AuthDatabase, UserQuery},
     http::utils::get_session_cookie,
 };
 
@@ -34,14 +33,15 @@ struct OAuthTransaction {
     code_verifier: String,
     callback_url: Option<String>,
 }
-
 #[get("/callback/{provider}")]
 pub async fn callback(
+    req: HttpRequest,
+    query: web::Query<OAuthCallbackQuery>,
     data: web::Data<AuthrData>,
     path: web::Path<String>,
-    query: web::Query<OAuthCallbackQuery>,
-) -> impl Responder {
+) -> Result<HttpResponse, AuthrError> {
     let provider_id = path.into_inner();
+
     let OAuthCallbackQuery {
         code,
         error,
@@ -49,91 +49,99 @@ pub async fn callback(
         state,
     } = query.into_inner();
 
-    // Where the user is redirected when the OAuth flow fails.
-    let error_url = format!("{}/error", data.base_url);
-    let redirect_error = |error: &str| -> HttpResponse {
-        let mut url = match Url::parse(&error_url) {
-            Ok(url) => url,
-            Err(_) => return HttpResponse::InternalServerError().finish(),
-        };
+    // ----- Create closure to redirect when an error happens
+    let mut error_url = get_base_url(&data.config.base_url, &req)?;
+    error_url.set_path(&format!(
+        "{}/error",
+        data.config.base_path.trim_end_matches('/')
+    ));
 
+    let redirect_error = |error: &str, error_description: Option<String>| -> HttpResponse {
+        let mut url = error_url.clone();
         url.query_pairs_mut().append_pair("error", error);
+
+        if let Some(err_desc) = error_description {
+            url.query_pairs_mut()
+                .append_pair("error_description", &err_desc);
+        }
 
         HttpResponse::Found()
             .append_header(("Location", url.to_string()))
             .finish()
     };
 
-    // 1. Check whether the provider returned an OAuth error.
+    // ----- Authorization Error
     if let Some(error) = error {
-        eprintln!(
-            "OAuth authorization failed: {}",
-            error_description.as_deref().unwrap_or(&error)
+        tracing::warn!(
+            provider = %provider_id,
+            error = %error,
+            description = ?error_description,
+            "OAuth authorization failed"
         );
 
-        return redirect_error(&error);
+        return Ok(redirect_error(&error, error_description));
     }
 
-    // 2. Validate the state.
+    // ----- State Validation
     let Some(state) = state else {
-        return redirect_error("state_not_found");
+        return Ok(redirect_error("state_not_found", None));
     };
 
-    // 3. Retrieve and consume the OAuth transaction.
-    //
-    // This operation should be atomic: retrieve the verification
-    // and delete it in one database transaction.
+    // Retrieve and consume the OAuth transaction.
     let identifier = format!("oauth:{state}");
-
     let verification = match data.database.consume_verification(&identifier).await {
         Ok(Some(verification)) => verification,
-        Ok(None) => return redirect_error("invalid_state"),
+        Ok(None) => return Ok(redirect_error("invalid_state", None)),
         Err(error) => {
-            eprintln!("Failed to consume OAuth state: {error}");
-            return redirect_error("invalid_state");
+            tracing::error!(error = %error, "Failed to consume OAuth state");
+            return Ok(redirect_error("invalid_state", None));
         }
     };
 
+    // Deserialize the OAuth transaction.
     let transaction: OAuthTransaction = match serde_json::from_str(&verification.value) {
         Ok(transaction) => transaction,
         Err(error) => {
-            eprintln!("Invalid OAuth transaction: {error}");
-            return redirect_error("invalid_state");
+            tracing::error!(error = %error, "Invalid OAuth transaction");
+            return Ok(redirect_error("invalid_state", None));
         }
     };
 
-    // 4. Make sure the transaction belongs to this provider.
+    // Make sure the transaction belongs to this provider and hasn't expired.
     if transaction.provider_id != provider_id {
-        return redirect_error("provider_mismatch");
+        return Ok(redirect_error("provider_mismatch", None));
     }
 
-    // 5. Check the transaction expiration.
     if verification.expires_at <= Utc::now() {
-        return redirect_error("state_expired");
+        return Ok(redirect_error("state_expired", None));
     }
 
-    // 6. Retrieve the provider.
-    let Some(provider) = data.providers.get(&provider_id) else {
-        return redirect_error("provider_not_found");
+    // ----- Provider Resolution
+    let Some(provider) = data.config.social_providers.get(&provider_id) else {
+        return Ok(redirect_error("provider_not_found", None));
     };
 
-    // 7. Make sure we received an authorization code.
     let Some(code) = code else {
-        return redirect_error("code_not_found");
+        return Ok(redirect_error("code_not_found", None));
     };
 
-    // 8. Generate the same redirect URI used during authorization.
-    let redirect_uri = match get_provider_callback_url(&data.base_url, provider.id()) {
+    // Generate the same redirect URI used during authorization.
+    let redirect_uri = match get_provider_callback_url(
+        &data.config.base_url,
+        &data.config.base_path,
+        &req,
+        provider.id(),
+    ) {
         Ok(url) => url,
         Err(error) => {
-            eprintln!("Failed to create provider callback URL: {error}");
-            return redirect_error("invalid_callback_url");
+            tracing::error!(error = %error, "Failed to create provider callback URL");
+            return Ok(redirect_error("invalid_callback_url", None));
         }
     };
 
-    // 9. Exchange the authorization code for tokens.
+    // ----- Token Exchange
     let tokens = match provider
-        .exchange_code(TokenExchangeParams {
+        .validate_authorization_code(TokenExchangeParams {
             code,
             code_verifier: transaction.code_verifier,
             redirect_uri,
@@ -142,59 +150,63 @@ pub async fn callback(
     {
         Ok(tokens) => tokens,
         Err(error) => {
-            eprintln!("OAuth token exchange failed: {error}");
-            return redirect_error("token_exchange_failed");
+            tracing::error!(error = %error, "OAuth token exchange failed");
+            return Ok(redirect_error("token_exchange_failed", None));
         }
     };
 
-    // 10. Retrieve the provider user's information.
+    // ----- User Resolution
     let provider_user = match provider.get_user_info(&tokens).await {
         Ok(user) => user,
         Err(error) => {
-            eprintln!("Failed to retrieve provider user: {error}");
-            return redirect_error("user_info_failed");
+            tracing::error!(error = %error, "Failed to retrieve provider user");
+            return Ok(redirect_error("user_info_failed", None));
         }
     };
 
-    // 11. An email is required for the initial implementation.
-    let Some(_email) = provider_user.email.clone() else {
-        return redirect_error("email_not_found");
-    };
+    if provider_user.email.is_none() {
+        return Ok(redirect_error("email_not_found", None));
+    }
 
-    // 12. Resolve the local user and linked account.
     let user = match resolve_oauth_user(&data, &provider_id, &provider_user, &tokens).await {
         Ok(user) => user,
         Err(error) => {
-            eprintln!("Failed to resolve OAuth user: {error}");
-            return redirect_error("account_linking_failed");
+            tracing::error!(error = %error, "Failed to resolve OAuth user");
+            return Ok(redirect_error("account_linking_failed", None));
         }
     };
 
-    // 13. Create a local session.
+    // ----- Session Creation
+    let ip_address = req.peer_addr().map(|address| address.ip().to_string());
+    let user_agent = req
+        .headers()
+        .get("User-Agent")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
     let session = match data
         .database
-        .create_session(&user.id.to_string(), true)
+        .create_session(Session::new(user.id, ip_address, user_agent), true)
         .await
     {
         Ok(session) => session,
         Err(error) => {
-            eprintln!("Failed to create session: {error}");
-            return redirect_error("session_creation_failed");
+            tracing::error!(error = %error, "Failed to create session");
+            return Ok(redirect_error("session_creation_failed", None));
         }
     };
 
-    // 14. Set the local session cookie.
-    let cookie = get_session_cookie(&session);
-
-    // 15. Redirect the user back to the application.
+    // ----- Application Redirect
     let Some(callback_url) = transaction.callback_url else {
-        return redirect_error("callback_url_not_found");
+        return Ok(redirect_error("callback_url_not_found", None));
     };
 
-    HttpResponse::Found()
+    let cookie = get_session_cookie(&session);
+
+    Ok(HttpResponse::Found()
         .append_header(("Location", callback_url))
         .cookie(cookie)
-        .finish()
+        .finish())
 }
 
 async fn resolve_oauth_user(
@@ -203,68 +215,58 @@ async fn resolve_oauth_user(
     provider_user: &ProviderUser,
     tokens: &TokenResponse,
 ) -> Result<User, AuthrError> {
-    // 1. Look for an existing provider account.
+    // ----- Existing Account
     if let Some(account) = data
         .database
-        .find_account(provider_id, &provider_user.id)
+        .find_account(crate::database::store::AccountQuery::Provider {
+            provider_id,
+            account_id: &provider_user.id,
+        })
         .await?
     {
         return data
             .database
-            .find_user_by_id(&account.user_id.to_string())
+            .find_user(UserQuery::Id(&account.user_id.to_string()))
             .await?
             .ok_or(AuthrError::UserNotFound);
     }
 
+    // ----- User Resolution
     let email = provider_user
         .email
         .as_deref()
         .ok_or(AuthrError::InvalidEmail)?;
-
-    // 2. Look for an existing local user with this email.
-    let user = match data.database.find_user_by_email(email).await? {
+    let user = match data.database.find_user(UserQuery::Email(email)).await? {
         Some(user) => user,
-
-        // 3. Otherwise, create a new local user.
+        // If user doesn't exist create one
         None => {
-            let now = Utc::now();
-
-            let user = User {
-                id: Uuid::new_v4(),
-                name: provider_user.name.clone().unwrap_or_default(),
-                email: email.to_string(),
-                email_verified: provider_user.email_verified,
-                image: provider_user.image.clone(),
-                created_at: now,
-                updated_at: now,
-            };
-
-            data.database.create_user(user).await?
+            data.database
+                .create_user(User::new(
+                    provider_user.name.clone().unwrap_or_default(),
+                    email.to_string(),
+                    provider_user.email_verified,
+                    provider_user.image.clone(),
+                ))
+                .await?
         }
     };
 
-    // 4. Link the provider account to the local user.
-    let now = Utc::now();
-
-    let account = Account {
-        id: Uuid::new_v4(),
-        user_id: user.id,
-        account_id: provider_user.id.clone(),
-        provider_id: provider_id.to_string(),
-        access_token: Some(tokens.access_token.clone()),
-        refresh_token: tokens.refresh_token.clone(),
-        access_token_expires_at: tokens
-            .expires_in
-            .map(|seconds| now + chrono::Duration::seconds(seconds as i64)),
-        refresh_token_expires_at: None,
-        scope: Some(tokens.scopes.join(",")),
-        id_token: tokens.id_token.clone(),
-        password_hash: None,
-        created_at: now,
-        updated_at: now,
-    };
-
-    data.database.link_account(account).await?;
+    // ----- Account Linking
+    data.database
+        .create_account(Account::new_social(
+            user.id,
+            provider_id.to_string(),
+            provider_user.id.clone(),
+            Some(tokens.access_token.clone()),
+            tokens.refresh_token.clone(),
+            tokens
+                .expires_in
+                .map(|seconds| Utc::now() + chrono::Duration::seconds(seconds as i64)),
+            None,
+            Some(tokens.scopes.join(",")),
+            tokens.id_token.clone(),
+        ))
+        .await?;
 
     Ok(user)
 }

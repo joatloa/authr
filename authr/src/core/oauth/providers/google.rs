@@ -110,12 +110,9 @@ impl OAuthProvider for GoogleProvider {
             query.append_pair("redirect_uri", params.redirect_uri.as_str());
             query.append_pair("response_type", "code");
             query.append_pair("state", &params.state);
+            query.append_pair("scope", &params.scopes.join(" "));
             query.append_pair("code_challenge", &params.code_challenge);
             query.append_pair("code_challenge_method", "S256");
-
-            for scope in params.scopes {
-                query.append_pair("scope", &scope);
-            }
         }
 
         Ok(url)

@@ -2,6 +2,7 @@ use std::{env, error::Error};
 
 use authr::core::auth::{AuthrConfig, EmailAndPassword, SocialProviders, run_authr};
 use dotenvy::dotenv;
+use tracing_subscriber::EnvFilter;
 
 #[actix_web::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {

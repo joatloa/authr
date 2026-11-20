@@ -2,14 +2,13 @@ use actix_web::{HttpRequest, HttpResponse, http::header, post, web};
 use email_address::EmailAddress;
 use serde::Deserialize;
 use serde_json::json;
-use uuid::Uuid;
 
 use crate::{
     core::{
         auth::AuthrData,
         error::AuthrError,
         types::{Account, Session, User},
-        utils::{generate_random_value, hash_password},
+        utils::hash_password_async,
     },
     database::store::{AuthDatabase, UserQuery},
     http::utils::get_session_cookie,
@@ -18,18 +17,31 @@ use crate::{
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RegisterRequest {
+    /// The name of the user
     name: String,
+    /// The email of the user
     email: String,
+    /// The password of the user
     password: String,
+    /// The profile image URL of the user
     image: Option<String>,
-    callback_url: Option<String>,
     #[serde(default = "default_remember_me")]
+    /// If this is false, the session will not be remembered. Default is `true`.
     remember_me: bool,
 }
 fn default_remember_me() -> bool {
     false
 }
 
+#[tracing::instrument(
+    name = "auth.sign_up",
+    skip_all,
+    fields(
+        remember_me = body.remember_me,
+        auto_sign_in = data.config.email_and_password.auto_sign_in
+    ),
+    err
+)]
 #[post("/sign-up")]
 pub async fn sign_up(
     req: HttpRequest,
@@ -41,83 +53,113 @@ pub async fn sign_up(
         email,
         password,
         image,
-        callback_url: _callback_url,
         remember_me,
     } = body.into_inner();
+
     let email = email.to_lowercase();
 
-    // ---- Check request body
+    let should_return_generic_duplicate_response = !data.config.email_and_password.auto_sign_in;
+    let should_skip_auto_sign_in = !data.config.email_and_password.auto_sign_in;
+
+    // ----- Check request body
     if !EmailAddress::is_valid(&email) {
+        tracing::debug!("Registration rejected: invalid email");
         return Err(AuthrError::InvalidEmail);
     }
+
     if password.len() < data.config.email_and_password.min_password_length
         || password.len() > data.config.email_and_password.max_password_length
     {
+        tracing::debug!("Registration rejected: invalid password length");
         return Err(AuthrError::InvalidPassword);
     }
+
     if name.trim().is_empty() {
+        tracing::debug!("Registration rejected: empty name");
         return Err(AuthrError::InvalidName);
     }
 
-    // ---- Check if user already exists
+    // ----- Check if user already exists
     let db_user = data.database.find_user(UserQuery::Email(&email)).await?;
+
     if db_user.is_some() {
+        tracing::warn!(
+            generic_response = should_return_generic_duplicate_response,
+            "Registration attempted with an existing email: {:?}",
+            email
+        );
+
+        if should_return_generic_duplicate_response {
+            return Ok(build_generic_duplicate_response(data, name, email, password, image).await);
+        }
+
         return Err(AuthrError::UserAlreadyExists);
     }
 
-    // ---- Create user
-    let argon = data.argon.clone();
-    let password_hash = web::block(move || hash_password(&argon, &password))
-        .await
-        .map_err(|_| AuthrError::PasswordHashingFailed)??;
+    // ----- Create user
+    let password_hash = hash_password_async(data.argon.clone(), password.clone()).await?;
 
-    let created_user = data
+    let created_user = match data
         .database
-        .create_user(User {
-            id: Uuid::new_v4(),
-            name,
-            email,
-            image,
-            ..Default::default()
-        })
-        .await?;
+        .create_user(User::new(name.clone(), email.clone(), false, image.clone()))
+        .await
+    {
+        Ok(user) => user,
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                "Failed to create user"
+            );
 
-    // ---- Link created user with a `credential` account
+            if should_return_generic_duplicate_response {
+                return Ok(
+                    build_generic_duplicate_response(data, name, email, password, image).await,
+                );
+            }
+
+            return Err(err);
+        }
+    };
+
+    // ----- Link created user with a credential account
     data.database
-        .create_account(Account {
-            id: Uuid::new_v4(),
-            account_id: created_user.id.to_string(),
-            provider_id: "credential".to_string(),
-            user_id: created_user.id,
-            password_hash: Some(password_hash),
-            ..Default::default()
-        })
+        .create_account(Account::new_credential(created_user.id, password_hash))
         .await?;
 
-    // ----- Create the session for the user
+    // ----- Skip automatic sign-in
+    if should_skip_auto_sign_in {
+        return Ok(HttpResponse::Created().json(json!({
+            "token": null,
+            "user": {
+                "id": created_user.id,
+                "name": created_user.name,
+                "email": created_user.email,
+                "image": created_user.image,
+                "emailVerified": created_user.email_verified
+            }
+        })));
+    }
+
+    // ----- Create session
+    let ip_address = req.peer_addr().map(|p| p.ip().to_string());
+    let user_agent = req
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|ua| ua.to_str().ok())
+        .map(String::from);
     let session = data
         .database
         .create_session(
-            Session {
-                id: Uuid::new_v4(),
-                user_id: created_user.id,
-                token: generate_random_value(),
-                ip_address: req.peer_addr().map(|p| p.ip().to_string()),
-                user_agent: req
-                    .headers()
-                    .get(header::USER_AGENT)
-                    .and_then(|ua| ua.to_str().ok())
-                    .map(String::from),
-                ..Default::default()
-            },
+            Session::new(created_user.id, ip_address, user_agent),
             remember_me,
         )
         .await?;
 
-    // ----- Give Response
+    // ----- Give response
     Ok(HttpResponse::Created()
         .cookie(get_session_cookie(&session))
         .json(json!({
+            "token": session.token,
             "user": {
                 "id": created_user.id,
                 "name": created_user.name,
@@ -126,4 +168,32 @@ pub async fn sign_up(
                 "emailVerified": created_user.email_verified
             }
         })))
+}
+
+async fn build_generic_duplicate_response(
+    data: web::Data<AuthrData>,
+    name: String,
+    email: String,
+    password: String,
+    image: Option<String>,
+) -> HttpResponse {
+    if let Err(err) = hash_password_async(data.argon.clone(), password).await {
+        tracing::error!(
+            error = %err,
+            "Dummy password hashing failed"
+        );
+    }
+
+    let synthetic_user = User::new(name, email, false, image);
+
+    HttpResponse::Created().json(json!({
+        "token": null,
+        "user": {
+            "id": synthetic_user.id,
+            "name": synthetic_user.name,
+            "email": synthetic_user.email,
+            "image": synthetic_user.image,
+            "emailVerified": synthetic_user.email_verified
+        }
+    }))
 }
