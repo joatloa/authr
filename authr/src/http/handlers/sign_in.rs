@@ -1,6 +1,6 @@
-use actix_web::{HttpRequest, HttpResponse, http::header, post, web};
+use actix_web::{HttpRequest, HttpResponse, http::header, web};
 use email_address::EmailAddress;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::{
     core::{
@@ -8,7 +8,7 @@ use crate::{
         error::AuthrError::{self},
         oauth::{
             OAuthProvider,
-            types::AuthorizationParams,
+            types::{AuthorizationParams, OAuthTransaction},
             utils::{generate_pkce_challenge, get_provider_callback_url},
         },
         types::{Session, Verification},
@@ -22,29 +22,26 @@ use crate::{
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SigninEmailRequest {
+pub struct SigninEmailRequest {
     email: String,
     password: String,
     #[serde(default = "default_remember_me")]
     remember_me: bool,
-    callback_url: Option<String>,
 }
 
 fn default_remember_me() -> bool {
     true
 }
 
-#[post("/sign-in/email")]
-pub async fn sign_in_email(
+pub async fn sign_in_email<D: AuthDatabase + 'static>(
     req: HttpRequest,
-    data: web::Data<AuthrData>,
+    data: web::Data<AuthrData<D>>,
     body: web::Json<SigninEmailRequest>,
 ) -> Result<HttpResponse, AuthrError> {
     let SigninEmailRequest {
         email,
         password,
         remember_me,
-        callback_url,
     } = body.into_inner();
     let email = email.trim().to_lowercase();
 
@@ -122,8 +119,6 @@ pub async fn sign_in_email(
     Ok(HttpResponse::Ok()
         .cookie(get_session_cookie(&session))
         .json(serde_json::json!({
-            "redirect": callback_url.is_some(),
-            "url": callback_url,
             "token": session.token,
             "user": {
                 "id": user.id,
@@ -138,23 +133,15 @@ pub async fn sign_in_email(
 // -------------------- OAuth2 --------------------
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SigninSocialRequest {
+pub struct SigninSocialRequest {
     provider: String,
     callback_url: Option<String>,
     #[serde(default = "default_redirect")]
-    redirect: bool,
+    disable_redirect: bool,
     scopes: Option<Vec<String>>,
 }
 fn default_redirect() -> bool {
     false
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OAuthTransaction {
-    provider_id: String,
-    code_verifier: String,
-    callback_url: Option<String>,
 }
 
 #[tracing::instrument(
@@ -162,20 +149,19 @@ struct OAuthTransaction {
     skip_all,
     fields(
         provider = %body.provider,
-        redirect = body.redirect
+        redirect = body.disable_redirect
     ),
     err
 )]
-#[post("/sign-in/social")]
-pub async fn sign_in_social(
+pub async fn sign_in_social<D: AuthDatabase + 'static>(
     req: HttpRequest,
-    data: web::Data<AuthrData>,
+    data: web::Data<AuthrData<D>>,
     body: web::Json<SigninSocialRequest>,
 ) -> Result<HttpResponse, AuthrError> {
     let SigninSocialRequest {
         provider,
         callback_url,
-        redirect,
+        disable_redirect,
         scopes,
     } = body.into_inner();
 
@@ -238,12 +224,12 @@ pub async fn sign_in_social(
     // ----- Give Response
     let mut response = HttpResponse::Ok();
 
-    if redirect {
+    if !disable_redirect {
         response.append_header(("Location", authorization_url.as_str()));
     }
 
     Ok(response.json(serde_json::json!({
         "url": authorization_url,
-        "redirect": redirect,
+        "redirect": !disable_redirect,
     })))
 }

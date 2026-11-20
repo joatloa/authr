@@ -15,7 +15,7 @@ pub enum Provider {
 }
 
 #[async_trait]
-pub trait OAuthProvider: Send + Sync {
+pub trait OAuthProvider {
     /// Returns the provider's unique identifier.
     fn id(&self) -> &'static str;
     /// Returns the provider's display name.
@@ -36,6 +36,21 @@ pub trait OAuthProvider: Send + Sync {
     async fn refresh_access_token(&self, refresh_token: &str) -> Result<TokenResponse, AuthrError>;
     /// Retrieves and validates the authenticated user's profile.
     async fn get_user_info(&self, tokens: &TokenResponse) -> Result<ProviderUser, AuthrError>;
+    /// Indicates whether the provider supports OpenID Connect RP-Initiated Logout.
+    fn supports_end_session(&self) -> bool {
+        false
+    }
+    /// Builds the provider's logout URL using the available session and redirect parameters.
+    ///
+    /// Returns `None` when the provider does not support logout or cannot generate a URL.
+    async fn create_end_session_url(
+        &self,
+        _id_token: Option<&str>,
+        _post_logout_redirect_uri: Option<&Url>,
+        _state: Option<&str>,
+    ) -> Result<Option<Url>, AuthrError> {
+        Ok(None)
+    }
 }
 // ----- OAuthProvider implementation foor Provider
 macro_rules! delegate_provider {
@@ -74,5 +89,20 @@ impl OAuthProvider for Provider {
     }
     async fn get_user_info(&self, tokens: &TokenResponse) -> Result<ProviderUser, AuthrError> {
         delegate_provider!(self, get_user_info(tokens)).await
+    }
+    fn supports_end_session(&self) -> bool {
+        delegate_provider!(self, supports_end_session())
+    }
+    async fn create_end_session_url(
+        &self,
+        id_token: Option<&str>,
+        post_logout_redirect_uri: Option<&Url>,
+        state: Option<&str>,
+    ) -> Result<Option<Url>, AuthrError> {
+        delegate_provider!(
+            self,
+            create_end_session_url(id_token, post_logout_redirect_uri, state)
+        )
+        .await
     }
 }

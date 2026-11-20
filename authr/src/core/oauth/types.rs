@@ -1,5 +1,5 @@
 use reqwest::Url;
-use thiserror::Error;
+use serde::{Deserialize, Serialize};
 
 pub struct AuthorizationParams {
     pub state: String,
@@ -31,18 +31,12 @@ pub struct ProviderUser {
     pub email_verified: bool,
 }
 
-#[derive(Debug, Error)]
-pub enum ProviderError {
-    #[error("Invalid authorization code")]
-    InvalidAuthorizationCode,
-    #[error("Token exchange failed")]
-    TokenExchangeFailed,
-    #[error("Failed to retrieve user information")]
-    UserInfoFailed,
-    #[error("Failed to refresh access token")]
-    TokenRefreshFailed,
-    #[error("Invalid ID token")]
-    InvalidIdToken,
-    #[error("HTTP request failed: {0}")]
-    Request(#[from] reqwest::Error),
+// ----
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthTransaction {
+    pub provider_id: String,
+    pub code_verifier: String,
+    pub callback_url: Option<String>,
 }

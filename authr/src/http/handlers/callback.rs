@@ -1,4 +1,4 @@
-use actix_web::{HttpRequest, HttpResponse, get, web};
+use actix_web::{HttpRequest, HttpResponse, web};
 use chrono::Utc;
 use serde::Deserialize;
 
@@ -8,7 +8,7 @@ use crate::{
         error::AuthrError,
         oauth::{
             OAuthProvider,
-            types::{ProviderUser, TokenExchangeParams, TokenResponse},
+            types::{OAuthTransaction, ProviderUser, TokenExchangeParams, TokenResponse},
             utils::get_provider_callback_url,
         },
         types::{Account, Session, User},
@@ -19,25 +19,22 @@ use crate::{
 };
 
 #[derive(Debug, Deserialize)]
-struct OAuthCallbackQuery {
-    code: Option<String>,
-    error: Option<String>,
-    error_description: Option<String>,
-    state: Option<String>,
+pub struct OAuthCallbackQuery {
+    pub code: Option<String>,
+    pub error: Option<String>,
+    pub error_description: Option<String>,
+    pub state: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OAuthTransaction {
-    provider_id: String,
-    code_verifier: String,
-    callback_url: Option<String>,
-}
-#[get("/callback/{provider}")]
-pub async fn callback(
+#[tracing::instrument(
+    name = "auth.oauth_callback",
+    skip_all,
+    fields(provider = %path.as_str())
+)]
+pub async fn callback<D: AuthDatabase + 'static>(
     req: HttpRequest,
     query: web::Query<OAuthCallbackQuery>,
-    data: web::Data<AuthrData>,
+    data: web::Data<AuthrData<D>>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, AuthrError> {
     let provider_id = path.into_inner();
@@ -209,8 +206,8 @@ pub async fn callback(
         .finish())
 }
 
-async fn resolve_oauth_user(
-    data: &AuthrData,
+async fn resolve_oauth_user<D: AuthDatabase + 'static>(
+    data: &AuthrData<D>,
     provider_id: &str,
     provider_user: &ProviderUser,
     tokens: &TokenResponse,

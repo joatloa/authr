@@ -52,6 +52,7 @@ pub trait AuthDatabase: Send + Sync {
     // ----- Accounts
     async fn create_account(&self, account: Account) -> StoreResult<Account>;
     async fn find_account(&self, query: AccountQuery<'_>) -> StoreResult<Option<Account>>;
+    async fn find_accounts(&self, query: AccountQuery<'_>) -> StoreResult<Vec<Account>>;
     async fn update_account(&self, account: Account) -> StoreResult<Option<Account>>;
     async fn delete_account(&self, query: AccountQuery<'_>) -> StoreResult<bool>;
 

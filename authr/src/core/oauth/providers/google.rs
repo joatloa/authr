@@ -14,6 +14,7 @@ use crate::core::{
 const AUTHORIZATION_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const USER_INFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
+const END_SESSION_URL: &str = "https://accounts.google.com/Logout";
 
 #[derive(Debug, Clone)]
 pub struct GoogleProvider {
@@ -182,5 +183,34 @@ impl OAuthProvider for GoogleProvider {
             .map_err(|_| AuthrError::OAuthUserInfoFailed)?;
 
         Ok(user.into())
+    }
+    fn supports_end_session(&self) -> bool {
+        true
+    }
+    async fn create_end_session_url(
+        &self,
+        id_token: Option<&str>,
+        post_logout_redirect_uri: Option<&Url>,
+        state: Option<&str>,
+    ) -> Result<Option<Url>, AuthrError> {
+        let mut url = Url::parse(END_SESSION_URL).map_err(|_| AuthrError::Internal)?;
+
+        {
+            let mut query = url.query_pairs_mut();
+
+            if let Some(id_token) = id_token {
+                query.append_pair("id_token_hint", id_token);
+            }
+
+            if let Some(redirect_uri) = post_logout_redirect_uri {
+                query.append_pair("post_logout_redirect_uri", redirect_uri.as_str());
+            }
+
+            if let Some(state) = state {
+                query.append_pair("state", state);
+            }
+        }
+
+        Ok(Some(url))
     }
 }

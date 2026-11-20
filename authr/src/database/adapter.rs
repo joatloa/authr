@@ -338,6 +338,34 @@ impl AuthDatabase for DieselDatabase {
 
         Ok(row.map(Account::from))
     }
+    async fn find_accounts(&self, query: AccountQuery<'_>) -> StoreResult<Vec<Account>> {
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|_| AuthrError::AccountLookupFailed)?;
+
+        let row = match query {
+            AccountQuery::Id(id) => account::table
+                .filter(account::id.eq(id))
+                .select(AccountRow::as_select())
+                .load::<AccountRow>(&mut conn),
+            AccountQuery::Provider {
+                provider_id,
+                account_id,
+            } => account::table
+                .filter(account::providerId.eq(provider_id))
+                .filter(account::accountId.eq(account_id))
+                .select(AccountRow::as_select())
+                .load::<AccountRow>(&mut conn),
+            AccountQuery::UserId(user_id) => account::table
+                .filter(account::userId.eq(user_id))
+                .select(AccountRow::as_select())
+                .load::<AccountRow>(&mut conn),
+        }
+        .map_err(|_| AuthrError::AccountLookupFailed)?;
+
+        Ok(row.into_iter().map(Account::from).collect())
+    }
     async fn update_account(&self, mut account_data: Account) -> StoreResult<Option<Account>> {
         let mut conn = self
             .pool

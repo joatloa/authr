@@ -1,4 +1,4 @@
-use actix_web::{HttpRequest, HttpResponse, http::header, post, web};
+use actix_web::{HttpRequest, HttpResponse, http::header, web};
 use email_address::EmailAddress;
 use serde::Deserialize;
 use serde_json::json;
@@ -16,7 +16,7 @@ use crate::{
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RegisterRequest {
+pub struct RegisterRequest {
     /// The name of the user
     name: String,
     /// The email of the user
@@ -25,12 +25,9 @@ struct RegisterRequest {
     password: String,
     /// The profile image URL of the user
     image: Option<String>,
-    #[serde(default = "default_remember_me")]
-    /// If this is false, the session will not be remembered. Default is `true`.
+    #[serde(default)]
+    /// If this is false, the session will not be remembered. Default is `false`.
     remember_me: bool,
-}
-fn default_remember_me() -> bool {
-    false
 }
 
 #[tracing::instrument(
@@ -42,10 +39,9 @@ fn default_remember_me() -> bool {
     ),
     err
 )]
-#[post("/sign-up")]
-pub async fn sign_up(
+pub async fn sign_up<D: AuthDatabase + 'static>(
     req: HttpRequest,
-    data: web::Data<AuthrData>,
+    data: web::Data<AuthrData<D>>,
     body: web::Json<RegisterRequest>,
 ) -> Result<HttpResponse, AuthrError> {
     let RegisterRequest {
@@ -170,8 +166,8 @@ pub async fn sign_up(
         })))
 }
 
-async fn build_generic_duplicate_response(
-    data: web::Data<AuthrData>,
+async fn build_generic_duplicate_response<D: AuthDatabase + 'static>(
+    data: web::Data<AuthrData<D>>,
     name: String,
     email: String,
     password: String,
