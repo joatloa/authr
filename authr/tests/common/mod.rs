@@ -1,8 +1,10 @@
 mod db;
 mod log;
+mod provider;
 
 pub use db::TestDatabase;
 pub use log::init_tracing;
+pub use provider::MockOAuthProvider;
 
 // ---- helpers
 use authr::core::auth::{AuthrConfig, BaseUrl, EmailAndPassword, SocialProviders};
@@ -51,3 +53,16 @@ macro_rules! sign_up_user {
     }};
 }
 pub(crate) use sign_up_user;
+
+macro_rules! sign_in_social {
+    ($app:expr, $body:expr) => {{
+        let request = test::TestRequest::post()
+            .uri("/api/auth/sign-in/social")
+            .set_json($body)
+            .to_request();
+
+        test::call_service(&$app, request).await
+    }};
+}
+
+pub(crate) use sign_in_social;

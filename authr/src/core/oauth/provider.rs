@@ -1,3 +1,5 @@
+use std::{fmt::Debug, sync::Arc};
+
 use async_trait::async_trait;
 use reqwest::Url;
 
@@ -9,13 +11,23 @@ use crate::core::{
     },
 };
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Provider {
     Google(GoogleProvider),
+    Custom(Arc<dyn OAuthProvider>),
+}
+
+impl Debug for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Google(_) => f.debug_tuple("Google").finish(),
+            Self::Custom(provider) => f.debug_tuple("Custom").field(&provider.id()).finish(),
+        }
+    }
 }
 
 #[async_trait]
-pub trait OAuthProvider {
+pub trait OAuthProvider: Send + Sync {
     /// Returns the provider's unique identifier.
     fn id(&self) -> &'static str;
     /// Returns the provider's display name.
@@ -52,11 +64,13 @@ pub trait OAuthProvider {
         Ok(None)
     }
 }
+
 // ----- OAuthProvider implementation foor Provider
 macro_rules! delegate_provider {
     ($self:expr, $method:ident ( $($arg:expr),* )) => {
         match $self {
             Provider::Google(provider) => provider.$method($($arg),*),
+            Provider::Custom(provider) => provider.$method($($arg),*),
         }
     };
 }

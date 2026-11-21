@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -102,6 +102,7 @@ impl Verification {
             id: Uuid::new_v4(),
             identifier,
             value,
+            expires_at: Utc::now() + Duration::minutes(10),
             ..Default::default()
         }
     }
