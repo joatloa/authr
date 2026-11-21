@@ -1,26 +1,11 @@
-use actix_web::{HttpRequest, web};
+use actix_web::web;
 use argon2::{
     Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version,
     password_hash::SaltString,
 };
-use rand::{RngCore, rngs::OsRng};
-use sha2::{Digest, Sha256};
-use url::Url;
+use rand::rngs::OsRng;
 
-use crate::core::{auth::BaseUrl, error::AuthrError};
-
-// ----- Tokens
-pub fn generate_random_token() -> String {
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-pub fn hash_str(str: &str) -> String {
-    let hash = Sha256::digest(str.as_bytes());
-
-    hash.iter().map(|byte| format!("{byte:02x}")).collect()
-}
+use crate::core::error::AuthrError;
 
 // ----- Password
 pub fn create_argon() -> Argon2<'static> {
@@ -60,31 +45,4 @@ pub async fn verify_password_async(password: String, hash: String) -> Result<boo
     web::block(move || verify_password(&password, &hash))
         .await
         .map_err(|_| AuthrError::PasswordVerificationFailed)?
-}
-
-// ----- Other
-pub fn get_base_url(base_url: &BaseUrl, req: &HttpRequest) -> Result<Url, AuthrError> {
-    match base_url {
-        BaseUrl::Link { host } => Url::parse(host).map_err(|_| AuthrError::Internal),
-
-        BaseUrl::List {
-            allowed_hosts,
-            fallback,
-        } => {
-            let connection = req.connection_info();
-            let host = connection.host();
-
-            let is_allowed = allowed_hosts
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(host));
-
-            let base = if is_allowed {
-                format!("{}://{}", connection.scheme(), host)
-            } else {
-                fallback.clone()
-            };
-
-            Url::parse(&base).map_err(|_| AuthrError::Internal)
-        }
-    }
 }

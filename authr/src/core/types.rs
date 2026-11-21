@@ -16,6 +16,7 @@ pub struct User {
     pub updated_at: DateTime<Utc>,
 }
 impl User {
+    /// Creates a user with a new UUID and default timestamps.
     pub fn new(name: String, email: String, email_verified: bool, image: Option<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -30,19 +31,24 @@ impl User {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+/// A user's authentication identity, either a password credential or OAuth account.
 pub struct Account {
     pub id: Uuid,
     pub user_id: Uuid,
     pub account_id: String,
+    /// Provider identifier; `credential` is reserved for password accounts.
     pub provider_id: String,
 
+    /// OAuth access token, when applicable.
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
     pub access_token_expires_at: Option<DateTime<Utc>>,
     pub refresh_token_expires_at: Option<DateTime<Utc>>,
     pub scope: Option<String>,
+    /// OpenID Connect ID token, when provided.
     pub id_token: Option<String>,
 
+    /// Argon2 password hash for credential accounts.
     pub password_hash: Option<String>,
 
     pub created_at: DateTime<Utc>,
@@ -91,12 +97,14 @@ impl Account {
 pub struct Verification {
     pub id: Uuid,
     pub identifier: String,
+    /// Verification payload.
     pub value: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 impl Verification {
+    /// Creates a verification that expires after ten minutes.
     pub fn new(identifier: String, value: String) -> Self {
         Verification {
             id: Uuid::new_v4(),
@@ -113,6 +121,7 @@ impl Verification {
 pub struct Session {
     pub id: Uuid,
     pub user_id: Uuid,
+    /// Raw session token returned to the client
     pub token: String,
     pub expires_at: DateTime<Utc>,
     pub ip_address: Option<String>,
@@ -121,6 +130,7 @@ pub struct Session {
     pub updated_at: DateTime<Utc>,
 }
 impl Session {
+    /// Creates a session with a new UUID and random raw token.
     pub fn new(user_id: Uuid, ip_address: Option<String>, user_agent: Option<String>) -> Self {
         Self {
             id: Uuid::new_v4(),

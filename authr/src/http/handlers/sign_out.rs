@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    core::{auth::AuthrContext, oauth::OAuthProvider, utils::get_base_url},
+    core::{auth::AuthrContext, oauth::OAuthProvider},
     database::store::AuthDatabase,
     http::utils::{SESSION_COOKIE_NAME, get_removal_session_cookie},
 };
@@ -203,7 +203,7 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
     // ----- Resolve post-logout redirect URI
     let post_logout_redirect_uri = match callback_url {
         Some(callback_url) => {
-            let base_url = match get_base_url(&ctx.config().base_url, req) {
+            let base_url = match ctx.config().base_url.resolve(req) {
                 Ok(url) => {
                     tracing::debug!(%url, "Resolved base URL for provider logout");
                     url

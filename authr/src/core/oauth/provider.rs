@@ -12,6 +12,7 @@ use crate::core::{
 };
 
 #[derive(Clone)]
+/// A configured OAuth provider, built-in or custom.
 pub enum Provider {
     Google(GoogleProvider),
     Custom(Arc<dyn OAuthProvider>),
@@ -27,6 +28,7 @@ impl Debug for Provider {
 }
 
 #[async_trait]
+/// Provider operations required to run an OAuth authorization-code flow.
 pub trait OAuthProvider: Send + Sync {
     /// Returns the provider's unique identifier.
     fn id(&self) -> &'static str;

@@ -4,12 +4,10 @@ use serde_json::{Value, json};
 
 use authr::{
     core::auth::{AuthrContext, SocialProviders},
-    database::store::{AccountFilter, AuthDatabase, SessionFilter, UserFilter},
     http::router,
 };
 
 use crate::common::{TestDatabase, config, init_tracing, sign_up_user, test_app};
-
 // -------------------- Successful Registration --------------------
 
 #[actix_web::test]
@@ -19,6 +17,7 @@ async fn sign_up_creates_user_account_and_session() {
 
     let database = TestDatabase::default();
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let req_body = json!({
         "name": "Test User",
@@ -41,18 +40,14 @@ async fn sign_up_creates_user_account_and_session() {
     let user_id = body["user"]["id"].as_str().unwrap();
 
     // ----- Check User from Database
-    let user = database
-        .find_user(UserFilter::Id(user_id))
-        .await
-        .unwrap()
-        .unwrap();
+    let user = store.find_user_by_id(user_id).await.unwrap().unwrap();
 
     assert_eq!(user.name, req_body["name"]);
     assert_eq!(user.email, req_body["email"]);
 
     // ----- Check Account from Database
-    let account = database
-        .find_account(AccountFilter::UserId(user_id))
+    let account = store
+        .find_account_by_user_id(user_id)
         .await
         .unwrap()
         .unwrap();
@@ -61,10 +56,11 @@ async fn sign_up_creates_user_account_and_session() {
     assert!(account.password_hash.is_some());
 
     // ----- Check Session from Database
-    let session = database
-        .find_session(SessionFilter::UserId(user_id))
+    let session = store
+        .find_sessions_by_user_id(user_id)
         .await
         .unwrap()
+        .pop()
         .unwrap();
 
     assert_eq!(session.user_id, user.id);
@@ -79,6 +75,7 @@ async fn sign_up_normalizes_email_to_lowercase() {
 
     let database = TestDatabase::default();
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let req_body = json!({
         "name": "Test User",
@@ -90,10 +87,7 @@ async fn sign_up_normalizes_email_to_lowercase() {
     assert_eq!(response.status(), StatusCode::CREATED);
 
     // ----- Check User from Database
-    let user = database
-        .find_user(UserFilter::Email("test@example.com"))
-        .await
-        .unwrap();
+    let user = store.find_user_by_email("test@example.com").await.unwrap();
 
     assert!(user.is_some());
 }
@@ -107,6 +101,7 @@ async fn sign_up_returns_generic_response_for_existing_email() {
 
     let database = TestDatabase::default();
     let app = test_app!(database, config(false, SocialProviders::new(vec![])));
+    let store = database.to_authr_store();
 
     let req_body = json!({
         "name": "Test User",
@@ -133,15 +128,9 @@ async fn sign_up_returns_generic_response_for_existing_email() {
     assert_ne!(first_user_id, second_user_id);
 
     // ----- Check only first user exists in database
-    let existing_user = database
-        .find_user(UserFilter::Id(first_user_id))
-        .await
-        .unwrap();
+    let existing_user = store.find_user_by_id(first_user_id).await.unwrap();
 
-    let synthetic_user = database
-        .find_user(UserFilter::Id(second_user_id))
-        .await
-        .unwrap();
+    let synthetic_user = store.find_user_by_id(second_user_id).await.unwrap();
 
     assert!(existing_user.is_some());
     assert!(synthetic_user.is_none());
@@ -252,6 +241,7 @@ async fn sign_up_creates_long_lived_session_when_remember_me_is_true() {
 
     let database = TestDatabase::default();
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let req_body = json!({
         "name": "Test User",
@@ -263,14 +253,15 @@ async fn sign_up_creates_long_lived_session_when_remember_me_is_true() {
 
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    // ----- Check Session from Dataabse
+    // ----- Check Session from Database
     let body: Value = test::read_body_json(response).await;
     let user_id = body["user"]["id"].as_str().unwrap();
 
-    let session = database
-        .find_session(SessionFilter::UserId(user_id))
+    let session = store
+        .find_sessions_by_user_id(user_id)
         .await
         .unwrap()
+        .pop()
         .unwrap();
 
     assert_eq!(session.expires_at - session.created_at, Duration::days(30));
@@ -283,6 +274,7 @@ async fn sign_up_creates_short_lived_session_when_remember_me_is_false() {
 
     let database = TestDatabase::default();
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let req_body = json!({
         "name": "Test User",
@@ -294,14 +286,15 @@ async fn sign_up_creates_short_lived_session_when_remember_me_is_false() {
 
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    // ----- Check Session from Dataabse
+    // ----- Check Session from Database
     let body: Value = test::read_body_json(response).await;
     let user_id = body["user"]["id"].as_str().unwrap();
 
-    let session = database
-        .find_session(SessionFilter::UserId(user_id))
+    let session = store
+        .find_sessions_by_user_id(user_id)
         .await
         .unwrap()
+        .pop()
         .unwrap();
 
     assert_eq!(session.expires_at - session.created_at, Duration::days(1));
@@ -316,6 +309,7 @@ async fn sign_up_without_auto_sign_in_does_not_create_session() {
 
     let database = TestDatabase::default();
     let app = test_app!(database, config(false, SocialProviders::new(vec![])));
+    let store = database.to_authr_store();
 
     let req_body = json!({
         "name": "Test User",
@@ -334,23 +328,17 @@ async fn sign_up_without_auto_sign_in_does_not_create_session() {
     let user_id = body["user"]["id"].as_str().unwrap();
 
     // ----- Check User from Database
-    let user = database.find_user(UserFilter::Id(user_id)).await.unwrap();
+    let user = store.find_user_by_id(user_id).await.unwrap();
 
     assert!(user.is_some());
 
     // ----- Check Account from Database
-    let account = database
-        .find_account(AccountFilter::UserId(user_id))
-        .await
-        .unwrap();
+    let account = store.find_account_by_user_id(user_id).await.unwrap();
 
     assert!(account.is_some());
 
     // ----- Check Session from Database
-    let session = database
-        .find_session(SessionFilter::UserId(user_id))
-        .await
-        .unwrap();
+    let sessions = store.find_sessions_by_user_id(user_id).await.unwrap();
 
-    assert!(session.is_none());
+    assert!(sessions.is_empty());
 }

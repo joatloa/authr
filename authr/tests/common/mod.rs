@@ -9,13 +9,15 @@ pub use provider::MockOAuthProvider;
 // ---- helpers
 use authr::core::auth::{AuthrConfig, BaseUrl, EmailAndPassword, SocialProviders};
 
+pub const TEST_SECRET: &str = "test-secret-that-is-long-enough-for-testing";
+
 pub fn config(auto_sign_in: bool, social_providers: SocialProviders) -> AuthrConfig {
     AuthrConfig {
         app_name: "Authr Tests".to_string(),
         base_url: BaseUrl::from("http://localhost:3000"),
         base_path: "/api/auth".to_string(),
         database_url: String::new(),
-        secret: "test-secret-that-is-long-enough-for-testing".to_string(),
+        secret: TEST_SECRET.to_string(),
         email_and_password: EmailAndPassword {
             auto_sign_in,
             ..Default::default()

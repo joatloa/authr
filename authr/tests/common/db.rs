@@ -6,8 +6,9 @@ use tokio::sync::Mutex;
 
 use authr::{
     core::{
+        auth::AuthrStore,
+        secrets::derive_secrets,
         types::{Account, Session, User, Verification},
-        utils::hash_str,
     },
     database::store::{
         AccountFilter, AuthDatabase, SessionFilter, StoreResult, UserFilter, VerificationFilter,
@@ -25,6 +26,14 @@ struct TestDatabaseState {
 #[derive(Clone, Default)]
 pub struct TestDatabase {
     state: Arc<Mutex<TestDatabaseState>>,
+}
+
+impl TestDatabase {
+    pub fn to_authr_store(&self) -> AuthrStore<Self> {
+        let secrets = Arc::new(derive_secrets(super::TEST_SECRET));
+
+        AuthrStore::new(self.clone(), secrets)
+    }
 }
 
 #[async_trait]
@@ -95,9 +104,7 @@ impl AuthDatabase for TestDatabase {
         session.updated_at = now;
         session.expires_at = now + lifetime;
 
-        let mut stored_session = session.clone();
-        stored_session.token = hash_str(&session.token);
-
+        let stored_session = session.clone();
         state.sessions.push(stored_session);
 
         Ok(session)
@@ -106,7 +113,7 @@ impl AuthDatabase for TestDatabase {
         let state = self.state.lock().await;
 
         let session = state.sessions.iter().find(|session| match filter {
-            SessionFilter::Token(token) => session.token == hash_str(token),
+            SessionFilter::Token(token) => session.token == token,
             SessionFilter::UserId(user_id) => session.user_id.to_string() == user_id,
             _ => unreachable!(),
         });
@@ -123,7 +130,7 @@ impl AuthDatabase for TestDatabase {
             .sessions
             .iter()
             .filter(|session| match filter {
-                SessionFilter::Token(token) => session.token == hash_str(token),
+                SessionFilter::Token(token) => session.token == token,
                 SessionFilter::UserId(user_id) => session.user_id.to_string() == user_id,
                 SessionFilter::UserIdExcept {
                     user_id,
@@ -166,7 +173,7 @@ impl AuthDatabase for TestDatabase {
         let previous_len = state.sessions.len();
 
         state.sessions.retain(|session| !match filter {
-            SessionFilter::Token(token) => session.token == hash_str(token),
+            SessionFilter::Token(token) => session.token == token,
             SessionFilter::UserId(user_id) => session.user_id.to_string() == user_id,
             SessionFilter::UserIdExcept {
                 user_id,

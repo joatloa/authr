@@ -1,8 +1,12 @@
 use std::{collections::HashMap, net::SocketAddr};
 
-use crate::core::oauth::Provider;
+use actix_web::HttpRequest;
+use url::Url;
+
+use crate::core::{error::AuthrError, oauth::Provider};
 
 #[derive(Debug)]
+/// How Authr determines the public host used in generated URLs and bind address.
 pub enum BaseUrl {
     /// Uses a fixed URL for the Authr instance.
     Link { host: String },
@@ -33,6 +37,31 @@ impl BaseUrl {
             .parse()
             .map_err(std::io::Error::other)
     }
+    pub fn resolve(&self, req: &HttpRequest) -> Result<Url, AuthrError> {
+        match self {
+            Self::Link { host } => Url::parse(host).map_err(|_| AuthrError::Internal),
+
+            Self::List {
+                allowed_hosts,
+                fallback,
+            } => {
+                let connection = req.connection_info();
+                let host = connection.host();
+
+                let is_allowed = allowed_hosts
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(host));
+
+                let base = if is_allowed {
+                    format!("{}://{}", connection.scheme(), host)
+                } else {
+                    fallback.clone()
+                };
+
+                Url::parse(&base).map_err(|_| AuthrError::Internal)
+            }
+        }
+    }
 }
 impl From<String> for BaseUrl {
     fn from(host: String) -> Self {
@@ -49,6 +78,7 @@ impl From<&str> for BaseUrl {
 
 // -----
 #[derive(Debug)]
+/// Password authentication policy.
 pub struct EmailAndPassword {
     /// Maximum number of characters allowed in a password.
     ///
@@ -76,6 +106,7 @@ impl Default for EmailAndPassword {
 
 // -----
 #[derive(Debug)]
+/// OAuth providers available for social sign-in, keyed by provider ID.
 pub struct SocialProviders(HashMap<String, Provider>);
 
 impl SocialProviders {

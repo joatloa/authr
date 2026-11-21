@@ -12,7 +12,6 @@ use crate::{
             utils::get_provider_callback_url,
         },
         types::{Account, Session, User},
-        utils::get_base_url,
     },
     database::store::AuthDatabase,
     http::utils::get_session_cookie,
@@ -52,7 +51,7 @@ pub async fn callback<D: AuthDatabase + 'static>(
     } = query.into_inner();
 
     // ----- Create closure to redirect when an error happens
-    let mut error_url = get_base_url(&ctx.config().base_url, &req)?;
+    let mut error_url = ctx.config().base_url.resolve(&req)?;
     error_url.set_path(&format!(
         "{}/error",
         ctx.config().base_path.trim_end_matches('/')

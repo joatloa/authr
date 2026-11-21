@@ -1,19 +1,27 @@
+use std::sync::Arc;
+
 use chrono::Duration;
 
 use crate::{
-    core::types::{Account, Session, User, Verification},
+    core::{
+        secrets::AuthrSecrets,
+        types::{Account, Session, User, Verification},
+    },
     database::store::{
         AccountFilter, AuthDatabase, SessionFilter, StoreResult, UserFilter, VerificationFilter,
     },
 };
 
+/// Convenience facade over [`AuthDatabase`] with operation-specific methods.
 pub struct AuthrStore<D: AuthDatabase> {
     database: D,
+    secrets: Arc<AuthrSecrets>,
 }
 
 impl<D: AuthDatabase> AuthrStore<D> {
-    pub fn new(database: D) -> Self {
-        Self { database }
+    /// Wraps a persistence implementation.
+    pub fn new(database: D, secrets: Arc<AuthrSecrets>) -> Self {
+        Self { database, secrets }
     }
 
     // -------------------- Users --------------------
@@ -47,11 +55,27 @@ impl<D: AuthDatabase> AuthrStore<D> {
         } else {
             Duration::days(1)
         };
-        self.database.create_session(session, lifetime).await
+
+        let mut stored_session = session;
+        let unhashed_token = stored_session.token.clone();
+
+        stored_session.token = self.secrets.hash_session_token(&unhashed_token);
+
+        let mut session = self
+            .database
+            .create_session(stored_session, lifetime)
+            .await?;
+
+        // Return the original token to the caller.
+        session.token = unhashed_token;
+
+        Ok(session)
     }
     pub async fn find_session_by_token(&self, token: &str) -> StoreResult<Option<Session>> {
         self.database
-            .find_session(SessionFilter::Token(token))
+            .find_session(SessionFilter::Token(
+                &self.secrets.hash_session_token(&token),
+            ))
             .await
     }
     pub async fn find_sessions_by_user_id(&self, user_id: &str) -> StoreResult<Vec<Session>> {
@@ -76,7 +100,9 @@ impl<D: AuthDatabase> AuthrStore<D> {
     }
     pub async fn delete_session_by_token(&self, token: &str) -> StoreResult<bool> {
         self.database
-            .delete_session(SessionFilter::Token(token))
+            .delete_session(SessionFilter::Token(
+                &self.secrets.hash_session_token(&token),
+            ))
             .await
     }
     pub async fn delete_user_sessions(&self, user_id: &str) -> StoreResult<bool> {

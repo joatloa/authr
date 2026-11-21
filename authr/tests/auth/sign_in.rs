@@ -8,7 +8,6 @@ use serde_json::{Value, json};
 
 use authr::{
     core::auth::{AuthrContext, SocialProviders},
-    database::store::{AuthDatabase, SessionFilter},
     http::router,
 };
 
@@ -22,6 +21,7 @@ async fn sign_in_creates_session_and_sets_cookie() {
 
     let database = TestDatabase::default();
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let sign_up_response = sign_up_user!(
         app,
@@ -70,10 +70,7 @@ async fn sign_in_creates_session_and_sets_cookie() {
     // ----- Verify session creation
     let token = body["token"].as_str().unwrap();
 
-    let session = database
-        .find_session(SessionFilter::Token(token))
-        .await
-        .unwrap();
+    let session = store.find_session_by_token(token).await.unwrap();
 
     assert!(session.is_some());
 }
@@ -85,6 +82,7 @@ async fn sign_in_stores_user_agent() {
 
     let database = TestDatabase::default();
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let sign_up_response = sign_up_user!(
         app,
@@ -115,11 +113,7 @@ async fn sign_in_stores_user_agent() {
     let token = body["token"].as_str().unwrap();
 
     // ----- Verify session metadata
-    let session = database
-        .find_session(SessionFilter::Token(token))
-        .await
-        .unwrap()
-        .unwrap();
+    let session = store.find_session_by_token(token).await.unwrap().unwrap();
 
     assert_eq!(session.user_agent.as_deref(), Some("Authr Test"));
 }
@@ -131,6 +125,7 @@ async fn sign_in_respects_remember_me() {
 
     let database = TestDatabase::default();
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let sign_up_response = sign_up_user!(
         app,
@@ -161,11 +156,7 @@ async fn sign_in_respects_remember_me() {
     let token = body["token"].as_str().unwrap();
 
     // ----- Verify session expiration
-    let session = database
-        .find_session(SessionFilter::Token(token))
-        .await
-        .unwrap()
-        .unwrap();
+    let session = store.find_session_by_token(token).await.unwrap().unwrap();
 
     assert_eq!(session.expires_at - session.created_at, Duration::days(1));
 }

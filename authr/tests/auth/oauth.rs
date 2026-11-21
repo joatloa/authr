@@ -11,13 +11,13 @@ use authr::{
         oauth::{Provider, types::OAuthTransaction},
         types::Verification,
     },
-    database::store::{AccountFilter, AuthDatabase, SessionFilter, UserFilter, VerificationFilter},
     http::router,
 };
 
 use crate::common::{
     MockOAuthProvider, TestDatabase, config, sign_in_social, sign_up_user, test_app,
 };
+
 // -------------------- Helpers --------------------
 
 fn mock_providers(provider: MockOAuthProvider) -> SocialProviders {
@@ -41,7 +41,11 @@ async fn create_oauth_transaction(
         serde_json::to_string(&transaction).unwrap(),
     );
 
-    database.create_verification(verification).await.unwrap();
+    database
+        .to_authr_store()
+        .create_verification(verification)
+        .await
+        .unwrap();
 }
 
 // -------------------- Social Sign-in --------------------
@@ -54,6 +58,7 @@ async fn sign_in_social_generates_authorization_url() {
         database,
         config(true, mock_providers(MockOAuthProvider::new()))
     );
+    let store = database.to_authr_store();
 
     let req_body = json!({
         "provider": "mock"
@@ -85,11 +90,8 @@ async fn sign_in_social_generates_authorization_url() {
     assert_eq!(location.to_str().unwrap(), authorization_url.as_str());
 
     // ----- Check OAuth Transaction
-    let verification = database
-        .find_verification(VerificationFilter::Identifier(&format!(
-            "oauth:{}",
-            query["state"]
-        )))
+    let verification = store
+        .find_verification_by_identifier(&format!("oauth:{}", query["state"]))
         .await
         .unwrap();
 
@@ -307,7 +309,11 @@ async fn callback_rejects_expired_state() {
 
     verification.expires_at = Utc::now() - Duration::minutes(1);
 
-    database.create_verification(verification).await.unwrap();
+    database
+        .to_authr_store()
+        .create_verification(verification)
+        .await
+        .unwrap();
 
     let request = test::TestRequest::get()
         .uri("/api/auth/callback/mock?code=mock-code&state=expired-state")
@@ -336,6 +342,7 @@ async fn callback_creates_user_account_and_session() {
         database,
         config(true, mock_providers(MockOAuthProvider::new()))
     );
+    let store = database.to_authr_store();
 
     create_oauth_transaction(
         &database,
@@ -363,8 +370,8 @@ async fn callback_creates_user_account_and_session() {
     assert!(response.headers().contains_key(header::SET_COOKIE));
 
     // ----- Check User from Database
-    let user = database
-        .find_user(UserFilter::Email("mock@example.com"))
+    let user = store
+        .find_user_by_email("mock@example.com")
         .await
         .unwrap()
         .unwrap();
@@ -377,11 +384,8 @@ async fn callback_creates_user_account_and_session() {
     );
 
     // ----- Check Account from Database
-    let account = database
-        .find_account(AccountFilter::Provider {
-            provider_id: "mock",
-            account_id: "mock-user-123",
-        })
+    let account = store
+        .find_account_by_provider("mock", "mock-user-123")
         .await
         .unwrap()
         .unwrap();
@@ -392,8 +396,8 @@ async fn callback_creates_user_account_and_session() {
     assert_eq!(account.id_token.as_deref(), Some("mock-id-token"));
 
     // ----- Check Session from Database
-    let sessions = database
-        .find_sessions(SessionFilter::UserId(&user.id.to_string()))
+    let sessions = store
+        .find_sessions_by_user_id(&user.id.to_string())
         .await
         .unwrap();
 
@@ -411,6 +415,7 @@ async fn callback_links_oauth_account_to_existing_user() {
         database,
         config(true, mock_providers(MockOAuthProvider::new()))
     );
+    let store = database.to_authr_store();
 
     let req_body = json!({
         "name": "Existing User",
@@ -421,8 +426,8 @@ async fn callback_links_oauth_account_to_existing_user() {
     let signup_response = sign_up_user!(app, req_body);
     assert!(signup_response.status().is_success());
 
-    let existing_user = database
-        .find_user(UserFilter::Email("mock@example.com"))
+    let existing_user = store
+        .find_user_by_email("mock@example.com")
         .await
         .unwrap()
         .unwrap();
@@ -445,11 +450,8 @@ async fn callback_links_oauth_account_to_existing_user() {
     assert_eq!(response.status(), 302);
 
     // ----- Check Account Linking
-    let account = database
-        .find_account(AccountFilter::Provider {
-            provider_id: "mock",
-            account_id: "mock-user-123",
-        })
+    let account = store
+        .find_account_by_provider("mock", "mock-user-123")
         .await
         .unwrap()
         .unwrap();
@@ -457,8 +459,8 @@ async fn callback_links_oauth_account_to_existing_user() {
     assert_eq!(account.user_id, existing_user.id);
 
     // ----- Check User from Database
-    let user = database
-        .find_user(UserFilter::Email("mock@example.com"))
+    let user = store
+        .find_user_by_email("mock@example.com")
         .await
         .unwrap()
         .unwrap();

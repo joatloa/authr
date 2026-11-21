@@ -3,16 +3,14 @@ use actix_web::{
     http::{StatusCode, header},
     test, web,
 };
-use chrono::Duration;
 use serde_json::{Value, json};
 
 use authr::{
     core::{
-        auth::{AuthrConfig, AuthrContext, BaseUrl, EmailAndPassword, SocialProviders},
+        auth::{AuthrContext, SocialProviders},
         oauth::{Provider, providers::GoogleProvider},
         types::{Account, Session, User},
     },
-    database::store::{AuthDatabase, SessionFilter},
     http::router,
 };
 
@@ -20,7 +18,9 @@ use crate::common::{TestDatabase, config, init_tracing, test_app};
 
 // ----- Helpers
 async fn create_session(database: &TestDatabase) -> Session {
-    let user = database
+    let store = database.to_authr_store();
+
+    let user = store
         .create_user(User::new(
             "Test User".to_string(),
             "test@example.com".to_string(),
@@ -30,11 +30,12 @@ async fn create_session(database: &TestDatabase) -> Session {
         .await
         .unwrap();
 
-    database
-        .create_session(Session::new(user.id, None, None), Duration::days(1))
+    store
+        .create_session(Session::new(user.id, None, None), false)
         .await
         .unwrap()
 }
+
 #[actix_web::test]
 async fn sign_out_deletes_session_and_clears_cookie() {
     // ----- Setup
@@ -45,6 +46,7 @@ async fn sign_out_deletes_session_and_clears_cookie() {
     let token = session.token.clone();
 
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     // ----- Send sign-out request
     let request = test::TestRequest::post()
@@ -78,10 +80,7 @@ async fn sign_out_deletes_session_and_clears_cookie() {
     assert!(set_cookie.contains("SameSite=Lax"));
 
     // ----- Verify session deletion
-    let deleted_session = database
-        .find_session(SessionFilter::Token(&token))
-        .await
-        .unwrap();
+    let deleted_session = store.find_session_by_token(&token).await.unwrap();
 
     assert!(deleted_session.is_none());
 }
@@ -149,6 +148,8 @@ async fn sign_out_succeeds_with_invalid_session_token() {
 
 // -------------------- Social Provider -------------------------
 async fn create_google_account(database: &TestDatabase, user_id: uuid::Uuid) -> Account {
+    let store = database.to_authr_store();
+
     let mut account = Account::new_social(
         user_id,
         "google".to_string(),
@@ -163,22 +164,9 @@ async fn create_google_account(database: &TestDatabase, user_id: uuid::Uuid) -> 
 
     account.updated_at = chrono::Utc::now();
 
-    database.create_account(account.clone()).await.unwrap();
+    store.create_account(account.clone()).await.unwrap();
 
     account
-}
-
-fn config_with_providers(providers: Vec<(String, Provider)>) -> AuthrConfig {
-    AuthrConfig {
-        app_name: "Authr Tests".to_string(),
-        base_url: BaseUrl::from("http://localhost:3000"),
-        base_path: "/api/auth".to_string(),
-        database_url: String::new(),
-        secret: "test-secret-that-is-long-enough-for-testing".to_string(),
-        email_and_password: EmailAndPassword::default(),
-        social_providers: SocialProviders::new(providers),
-        disable_logs: true,
-    }
 }
 
 #[actix_web::test]
@@ -192,12 +180,13 @@ async fn sign_out_redirects_to_provider_logout() {
 
     create_google_account(&database, session.user_id).await;
 
-    let providers = vec![(
+    let providers = SocialProviders::new(vec![(
         "google".to_string(),
         Provider::Google(GoogleProvider::new("test-client-id", "test-client-secret")),
-    )];
+    )]);
 
-    let app = test_app!(database, config_with_providers(providers));
+    let app = test_app!(database, config(true, providers));
+    let store = database.to_authr_store();
 
     // ----- Send sign-out request
     let request = test::TestRequest::post()
@@ -240,13 +229,7 @@ async fn sign_out_redirects_to_provider_logout() {
     );
 
     // ----- Verify local session was revoked
-    assert!(
-        database
-            .find_session(SessionFilter::Token(&token))
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(store.find_session_by_token(&token).await.unwrap().is_none());
 }
 
 #[actix_web::test]
@@ -259,12 +242,12 @@ async fn sign_out_respects_disable_redirect() {
 
     create_google_account(&database, session.user_id).await;
 
-    let providers = vec![(
+    let providers = SocialProviders::new(vec![(
         "google".to_string(),
         Provider::Google(GoogleProvider::new("test-client-id", "test-client-secret")),
-    )];
+    )]);
 
-    let app = test_app!(database, config_with_providers(providers));
+    let app = test_app!(database, config(true, providers));
 
     // ----- Send sign-out request
     let request = test::TestRequest::post()
@@ -303,12 +286,12 @@ async fn sign_out_includes_callback_url_and_state() {
 
     create_google_account(&database, session.user_id).await;
 
-    let providers = vec![(
+    let providers = SocialProviders::new(vec![(
         "google".to_string(),
         Provider::Google(GoogleProvider::new("test-client-id", "test-client-secret")),
-    )];
+    )]);
 
-    let app = test_app!(database, config_with_providers(providers));
+    let app = test_app!(database, config(true, providers));
 
     // ----- Send sign-out request
     let request = test::TestRequest::post()
@@ -348,12 +331,13 @@ async fn sign_out_without_social_account_only_revokes_session() {
     let session = create_session(&database).await;
     let token = session.token.clone();
 
-    let providers = vec![(
+    let providers = SocialProviders::new(vec![(
         "google".to_string(),
         Provider::Google(GoogleProvider::new("test-client-id", "test-client-secret")),
-    )];
+    )]);
 
-    let app = test_app!(database, config_with_providers(providers));
+    let app = test_app!(database, config(true, providers));
+    let store = database.to_authr_store();
 
     // ----- Send sign-out request
     let request = test::TestRequest::post()
@@ -372,13 +356,7 @@ async fn sign_out_without_social_account_only_revokes_session() {
     assert_eq!(body, json!({ "success": true }));
 
     // ----- Verify local session was revoked
-    assert!(
-        database
-            .find_session(SessionFilter::Token(&token))
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(store.find_session_by_token(&token).await.unwrap().is_none());
 }
 
 #[actix_web::test]
@@ -388,6 +366,8 @@ async fn sign_out_attempts_provider_logout_without_id_token() {
 
     let database = TestDatabase::default();
     let session = create_session(&database).await;
+
+    let store = database.to_authr_store();
 
     let account = Account::new_social(
         session.user_id,
@@ -401,14 +381,14 @@ async fn sign_out_attempts_provider_logout_without_id_token() {
         None,
     );
 
-    database.create_account(account).await.unwrap();
+    store.create_account(account).await.unwrap();
 
-    let providers = vec![(
+    let providers = SocialProviders::new(vec![(
         "google".to_string(),
         Provider::Google(GoogleProvider::new("test-client-id", "test-client-secret")),
-    )];
+    )]);
 
-    let app = test_app!(database, config_with_providers(providers));
+    let app = test_app!(database, config(true, providers));
 
     // ----- Send sign-out request
     let request = test::TestRequest::post()

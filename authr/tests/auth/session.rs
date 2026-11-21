@@ -11,16 +11,16 @@ use authr::{
         auth::{AuthrContext, SocialProviders},
         types::{Session, User},
     },
-    database::store::{AuthDatabase, SessionFilter},
     http::router,
 };
+use uuid::Uuid;
 
 use crate::common::{TestDatabase, config, init_tracing, test_app};
 
 // -------------------- Helpers --------------------
-
 async fn create_user(database: &TestDatabase) -> User {
     database
+        .to_authr_store()
         .create_user(User::new(
             "Test User".to_string(),
             "test@example.com".to_string(),
@@ -31,9 +31,10 @@ async fn create_user(database: &TestDatabase) -> User {
         .unwrap()
 }
 
-async fn create_session(database: &TestDatabase, user_id: uuid::Uuid) -> Session {
+pub async fn create_session(database: &TestDatabase, user_id: Uuid) -> Session {
     database
-        .create_session(Session::new(user_id, None, None), Duration::days(1))
+        .to_authr_store()
+        .create_session(Session::new(user_id, None, None), false)
         .await
         .unwrap()
 }
@@ -43,6 +44,7 @@ async fn create_expired_session(database: &TestDatabase, user_id: uuid::Uuid) ->
     session.expires_at = Utc::now() - Duration::seconds(60);
 
     database
+        .to_authr_store()
         .update_session(session.clone())
         .await
         .unwrap()
@@ -121,6 +123,7 @@ async fn get_session_returns_null_and_deletes_expired_session() {
     let token = session.token.clone();
 
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let request = authenticated_request(Method::GET, "/api/auth/get-session", &token).to_request();
     let response = test::call_service(&app, request).await;
@@ -133,10 +136,7 @@ async fn get_session_returns_null_and_deletes_expired_session() {
     assert_eq!(body, Value::Null);
 
     // ----- Check Session from Database
-    let stored_session = database
-        .find_session(SessionFilter::Token(&token))
-        .await
-        .unwrap();
+    let stored_session = store.find_session_by_token(&token).await.unwrap();
 
     assert!(stored_session.is_none());
 }
@@ -213,6 +213,7 @@ async fn revoke_session_deletes_target_session() {
     let target_token = target.token.clone();
 
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let req_body = json!({
         "token": target_token
@@ -230,18 +231,12 @@ async fn revoke_session_deletes_target_session() {
     assert_eq!(body, json!({ "success": true }));
 
     // ----- Check Target Session from Database
-    let target_session = database
-        .find_session(SessionFilter::Token(&target_token))
-        .await
-        .unwrap();
+    let target_session = store.find_session_by_token(&target_token).await.unwrap();
 
     assert!(target_session.is_none());
 
     // ----- Check Current Session from Database
-    let current_session = database
-        .find_session(SessionFilter::Token(&current.token))
-        .await
-        .unwrap();
+    let current_session = store.find_session_by_token(&current.token).await.unwrap();
 
     assert!(current_session.is_some());
 }
@@ -254,7 +249,9 @@ async fn revoke_session_rejects_another_users_session() {
     let database = TestDatabase::default();
 
     let first_user = create_user(&database).await;
-    let second_user = database
+    let store = database.to_authr_store();
+
+    let second_user = store
         .create_user(User::new(
             "Another User".to_string(),
             "another@example.com".to_string(),
@@ -268,6 +265,7 @@ async fn revoke_session_rejects_another_users_session() {
     let target = create_session(&database, second_user.id).await;
 
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let req_body = json!({
         "token": target.token
@@ -281,10 +279,7 @@ async fn revoke_session_rejects_another_users_session() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     // ----- Check Target Session from Database
-    let target_session = database
-        .find_session(SessionFilter::Token(&target.token))
-        .await
-        .unwrap();
+    let target_session = store.find_session_by_token(&target.token).await.unwrap();
 
     assert!(target_session.is_some());
 }
@@ -331,6 +326,7 @@ async fn revoke_sessions_deletes_all_user_sessions_and_clears_cookie() {
     let third_token = third.token.clone();
 
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let request =
         authenticated_request(Method::POST, "/api/auth/revoke-sessions", &first.token).to_request();
@@ -357,10 +353,7 @@ async fn revoke_sessions_deletes_all_user_sessions_and_clears_cookie() {
 
     // ----- Check Sessions from Database
     for token in [&first_token, &second_token, &third_token] {
-        let session = database
-            .find_session(SessionFilter::Token(token))
-            .await
-            .unwrap();
+        let session = store.find_session_by_token(token).await.unwrap();
 
         assert!(session.is_none());
     }
@@ -401,6 +394,7 @@ async fn revoke_other_sessions_preserves_current_session() {
     let third_token = third.token.clone();
 
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
     let request = authenticated_request(
         Method::POST,
@@ -418,23 +412,14 @@ async fn revoke_other_sessions_preserves_current_session() {
     assert_eq!(body, json!({ "success": true }));
 
     // ----- Check Current Session from Database
-    let current_session = database
-        .find_session(SessionFilter::Token(&current.token))
-        .await
-        .unwrap();
+    let current_session = store.find_session_by_token(&current.token).await.unwrap();
 
     assert!(current_session.is_some());
 
     // ----- Check Other Sessions from Database
-    let second_session = database
-        .find_session(SessionFilter::Token(&second_token))
-        .await
-        .unwrap();
+    let second_session = store.find_session_by_token(&second_token).await.unwrap();
 
-    let third_session = database
-        .find_session(SessionFilter::Token(&third_token))
-        .await
-        .unwrap();
+    let third_session = store.find_session_by_token(&third_token).await.unwrap();
 
     assert!(second_session.is_none());
     assert!(third_session.is_none());
@@ -449,6 +434,7 @@ async fn revoke_other_sessions_does_not_revoke_another_users_sessions() {
     let user = create_user(&database).await;
 
     let other_user = database
+        .to_authr_store()
         .create_user(User::new(
             "Another User".to_string(),
             "another@example.com".to_string(),
@@ -462,7 +448,9 @@ async fn revoke_other_sessions_does_not_revoke_another_users_sessions() {
     let other_user_session = create_session(&database, other_user.id).await;
 
     let app = test_app!(database);
+    let store = database.to_authr_store();
 
+    // ----- Send Request
     let request = authenticated_request(
         Method::POST,
         "/api/auth/revoke-other-sessions",
@@ -474,8 +462,8 @@ async fn revoke_other_sessions_does_not_revoke_another_users_sessions() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // ----- Check Other User's Session from Database
-    let stored_session = database
-        .find_session(SessionFilter::Token(&other_user_session.token))
+    let stored_session = store
+        .find_session_by_token(&other_user_session.token)
         .await
         .unwrap();
 

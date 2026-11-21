@@ -12,16 +12,12 @@ use diesel::{
     r2d2::{ConnectionManager, Pool},
 };
 
-use crate::database::{
-    create_pool,
-    store::{AccountFilter, UserFilter, VerificationFilter},
-};
+use crate::database::store::{AccountFilter, UserFilter, VerificationFilter};
 use crate::database::{migrations::run_pending_migrations, store::SessionFilter};
 use crate::{
     core::{
         error::AuthrError,
         types::{Account, Session, User, Verification},
-        utils::hash_str,
     },
     database::{
         models::{
@@ -55,7 +51,11 @@ impl DieselDatabase {
         Self { pool }
     }
     pub fn from_url(url: &str) -> StoreResult<Self> {
-        let pool = create_pool::<AnyConnection>(url)?;
+        let manager = ConnectionManager::<AnyConnection>::new(url);
+        let pool = Pool::builder()
+            .build(manager)
+            .map_err(|_| AuthrError::Internal)?;
+
         run_pending_migrations(&pool)?;
 
         Ok(Self::new(pool))
@@ -163,9 +163,6 @@ impl AuthDatabase for DieselDatabase {
             .get()
             .map_err(|_| AuthrError::SessionCreationFailed)?;
 
-        // Hash the raw token before persisting it.
-        let token_hash = hash_str(&session_data.token);
-
         let now = Utc::now();
         session_data.created_at = now;
         session_data.updated_at = now;
@@ -174,7 +171,8 @@ impl AuthDatabase for DieselDatabase {
         let new_session = NewSession {
             id: &session_data.id.to_string(),
             userId: &session_data.user_id.to_string(),
-            tokenHash: &token_hash,
+            // The token is hashed in [`create_session`] in [`AuthrStore`]
+            tokenHash: &session_data.token,
             expiresAt: session_data.expires_at.naive_utc(),
             ipAddress: session_data.ip_address.as_deref(),
             userAgent: session_data.user_agent.as_deref(),
@@ -196,8 +194,9 @@ impl AuthDatabase for DieselDatabase {
             .map_err(|_| AuthrError::SessionLookupFailed)?;
 
         let row = match filter {
-            SessionFilter::Token(token) => session::table
-                .filter(session::tokenHash.eq(hash_str(token)))
+            // The token is hashed in [`find_session_by_token`] in [`AuthrStore`]
+            SessionFilter::Token(token_hash) => session::table
+                .filter(session::tokenHash.eq(token_hash))
                 .select(SessionRow::as_select())
                 .first::<SessionRow>(&mut conn)
                 .optional(),
@@ -224,10 +223,6 @@ impl AuthDatabase for DieselDatabase {
             .map_err(|_| AuthrError::SessionLookupFailed)?;
 
         let row = match filter {
-            SessionFilter::Token(token) => session::table
-                .filter(session::tokenHash.eq(hash_str(token)))
-                .select(SessionRow::as_select())
-                .load::<SessionRow>(&mut conn),
             SessionFilter::UserId(user_id) => session::table
                 .filter(session::userId.eq(user_id))
                 .select(SessionRow::as_select())
@@ -240,6 +235,7 @@ impl AuthDatabase for DieselDatabase {
                 .filter(session::id.ne(session_id))
                 .select(SessionRow::as_select())
                 .load::<SessionRow>(&mut conn),
+            _ => unreachable!(),
         }
         .map_err(|_| AuthrError::SessionLookupFailed)?;
 
@@ -287,9 +283,8 @@ impl AuthDatabase for DieselDatabase {
             .map_err(|_| AuthrError::SessionDeletionFailed)?;
 
         let affected = match filter {
-            SessionFilter::Token(token) => {
-                let token_hash = hash_str(token);
-
+            // The token is hashed in [`delete_session_by_token`] in [`AuthrStore`]
+            SessionFilter::Token(token_hash) => {
                 diesel::delete(session::table.filter(session::tokenHash.eq(token_hash)))
                     .execute(&mut conn)
             }
