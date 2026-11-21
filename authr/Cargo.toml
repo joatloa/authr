@@ -55,6 +55,8 @@ tracing = "0.1.44"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+criterion = { version = "0.7", features = ["async_tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [features]
 default = ["mysql"]
@@ -62,3 +64,19 @@ default = ["mysql"]
 mysql = ["diesel/mysql"]
 postgres = ["diesel/postgres"]
 sqlite = ["diesel/sqlite"]
+
+[[bench]]
+name = "crypto"
+harness = false
+
+[[bench]]
+name = "database"
+harness = false
+
+[[bench]]
+name = "auth"
+harness = false
+
+[[bench]]
+name = "middleware"
+harness = false
