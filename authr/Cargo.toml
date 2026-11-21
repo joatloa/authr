@@ -7,10 +7,19 @@ rust-version = "1.85"
 authors = ["joatloa"]
 description = "A flexible authentication library for Rust applications, with OAuth 2.0, OpenID Connect, and database integrations."
 license = "MIT"
-readme = "README.md"
+readme = "../README.md"
 repository = "https://github.com/joatloa/authr"
 documentation = "https://docs.rs/authr"
 keywords = ["authentication", "auth", "oauth", "actix", "diesel"]
+categories = [
+    "authentication",
+    "web-programming",
+    "database",
+]
+exclude = [
+    "/benches/**",
+    "/tests/**",
+]
 
 [dependencies]
 # HTTP framework
@@ -37,12 +46,10 @@ base64 = "0.22"
 hkdf = "0.13"
 
 # OAuth / OpenID Connect
-oauth2 = "5"
-openidconnect = "4"
 
 # HTTP client for OAuth providers
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-url = "2.5.8"
+url = { version = "2.5", features = ["serde"] }
 
 # Identifiers
 uuid = { version = "1", features = ["v4", "serde"] }
