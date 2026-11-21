@@ -10,7 +10,7 @@ use authr::{
         utils::hash_str,
     },
     database::store::{
-        AccountQuery, AuthDatabase, SessionQuery, StoreResult, UserQuery, VerificationQuery,
+        AccountFilter, AuthDatabase, SessionFilter, StoreResult, UserFilter, VerificationFilter,
     },
 };
 
@@ -41,12 +41,12 @@ impl AuthDatabase for TestDatabase {
 
         Ok(user)
     }
-    async fn find_user(&self, query: UserQuery<'_>) -> StoreResult<Option<User>> {
+    async fn find_user(&self, filter: UserFilter<'_>) -> StoreResult<Option<User>> {
         let state = self.state.lock().await;
 
-        let user = state.users.iter().find(|user| match query {
-            UserQuery::Id(id) => user.id.to_string() == id,
-            UserQuery::Email(email) => user.email == email,
+        let user = state.users.iter().find(|user| match filter {
+            UserFilter::Id(id) => user.id.to_string() == id,
+            UserFilter::Email(email) => user.email == email,
         });
 
         Ok(user.cloned())
@@ -69,14 +69,14 @@ impl AuthDatabase for TestDatabase {
 
         Ok(Some(user))
     }
-    async fn delete_user(&self, query: UserQuery<'_>) -> StoreResult<bool> {
+    async fn delete_user(&self, filter: UserFilter<'_>) -> StoreResult<bool> {
         let mut state = self.state.lock().await;
 
         let previous_len = state.users.len();
 
-        state.users.retain(|user| !match query {
-            UserQuery::Id(id) => user.id.to_string() == id,
-            UserQuery::Email(email) => user.email == email,
+        state.users.retain(|user| !match filter {
+            UserFilter::Id(id) => user.id.to_string() == id,
+            UserFilter::Email(email) => user.email == email,
         });
 
         Ok(state.users.len() < previous_len)
@@ -86,20 +86,14 @@ impl AuthDatabase for TestDatabase {
     async fn create_session(
         &self,
         mut session: Session,
-        remember_me: bool,
+        lifetime: Duration,
     ) -> StoreResult<Session> {
         let mut state = self.state.lock().await;
 
         let now = Utc::now();
-        let duration = if remember_me {
-            Duration::days(30)
-        } else {
-            Duration::days(1)
-        };
-
         session.created_at = now;
         session.updated_at = now;
-        session.expires_at = now + duration;
+        session.expires_at = now + lifetime;
 
         let mut stored_session = session.clone();
         stored_session.token = hash_str(&session.token);
@@ -108,12 +102,12 @@ impl AuthDatabase for TestDatabase {
 
         Ok(session)
     }
-    async fn find_session(&self, query: SessionQuery<'_>) -> StoreResult<Option<Session>> {
+    async fn find_session(&self, filter: SessionFilter<'_>) -> StoreResult<Option<Session>> {
         let state = self.state.lock().await;
 
-        let session = state.sessions.iter().find(|session| match query {
-            SessionQuery::Token(token) => session.token == hash_str(token),
-            SessionQuery::UserId(user_id) => session.user_id.to_string() == user_id,
+        let session = state.sessions.iter().find(|session| match filter {
+            SessionFilter::Token(token) => session.token == hash_str(token),
+            SessionFilter::UserId(user_id) => session.user_id.to_string() == user_id,
             _ => unreachable!(),
         });
 
@@ -122,16 +116,16 @@ impl AuthDatabase for TestDatabase {
             session
         }))
     }
-    async fn find_sessions(&self, query: SessionQuery<'_>) -> StoreResult<Vec<Session>> {
+    async fn find_sessions(&self, filter: SessionFilter<'_>) -> StoreResult<Vec<Session>> {
         let state = self.state.lock().await;
 
         let session = state
             .sessions
             .iter()
-            .filter(|session| match query {
-                SessionQuery::Token(token) => session.token == hash_str(token),
-                SessionQuery::UserId(user_id) => session.user_id.to_string() == user_id,
-                SessionQuery::UserIdExcept {
+            .filter(|session| match filter {
+                SessionFilter::Token(token) => session.token == hash_str(token),
+                SessionFilter::UserId(user_id) => session.user_id.to_string() == user_id,
+                SessionFilter::UserIdExcept {
                     user_id,
                     session_id,
                 } => session.user_id.to_string() == user_id && session.id.to_string() != session_id,
@@ -166,15 +160,15 @@ impl AuthDatabase for TestDatabase {
 
         Ok(Some(session))
     }
-    async fn delete_session(&self, query: SessionQuery<'_>) -> StoreResult<bool> {
+    async fn delete_session(&self, filter: SessionFilter<'_>) -> StoreResult<bool> {
         let mut state = self.state.lock().await;
 
         let previous_len = state.sessions.len();
 
-        state.sessions.retain(|session| !match query {
-            SessionQuery::Token(token) => session.token == hash_str(token),
-            SessionQuery::UserId(user_id) => session.user_id.to_string() == user_id,
-            SessionQuery::UserIdExcept {
+        state.sessions.retain(|session| !match filter {
+            SessionFilter::Token(token) => session.token == hash_str(token),
+            SessionFilter::UserId(user_id) => session.user_id.to_string() == user_id,
+            SessionFilter::UserIdExcept {
                 user_id,
                 session_id,
             } => session.user_id.to_string() == user_id && session.id.to_string() != session_id,
@@ -187,39 +181,41 @@ impl AuthDatabase for TestDatabase {
     async fn create_account(&self, mut account: Account) -> StoreResult<Account> {
         let mut state = self.state.lock().await;
 
-        account.updated_at = Utc::now();
+        let now = Utc::now();
+        account.created_at = now;
+        account.updated_at = now;
 
         state.accounts.push(account.clone());
 
         Ok(account)
     }
-    async fn find_account(&self, query: AccountQuery<'_>) -> StoreResult<Option<Account>> {
+    async fn find_account(&self, filter: AccountFilter<'_>) -> StoreResult<Option<Account>> {
         let state = self.state.lock().await;
 
-        let account = state.accounts.iter().find(|account| match query {
-            AccountQuery::Id(id) => account.id.to_string() == id,
-            AccountQuery::Provider {
+        let account = state.accounts.iter().find(|account| match filter {
+            AccountFilter::Id(id) => account.id.to_string() == id,
+            AccountFilter::Provider {
                 provider_id,
                 account_id,
             } => account.provider_id == provider_id && account.account_id == account_id,
-            AccountQuery::UserId(user_id) => account.user_id.to_string() == user_id,
+            AccountFilter::UserId(user_id) => account.user_id.to_string() == user_id,
         });
 
         Ok(account.cloned())
     }
-    async fn find_accounts(&self, query: AccountQuery<'_>) -> StoreResult<Vec<Account>> {
+    async fn find_accounts(&self, filter: AccountFilter<'_>) -> StoreResult<Vec<Account>> {
         let state = self.state.lock().await;
 
         let accounts = state
             .accounts
             .iter()
-            .filter(|account| match query {
-                AccountQuery::Id(id) => account.id.to_string() == id,
-                AccountQuery::Provider {
+            .filter(|account| match filter {
+                AccountFilter::Id(id) => account.id.to_string() == id,
+                AccountFilter::Provider {
                     provider_id,
                     account_id,
                 } => account.provider_id == provider_id && account.account_id == account_id,
-                AccountQuery::UserId(user_id) => account.user_id.to_string() == user_id,
+                AccountFilter::UserId(user_id) => account.user_id.to_string() == user_id,
             })
             .cloned()
             .collect();
@@ -244,18 +240,18 @@ impl AuthDatabase for TestDatabase {
 
         Ok(Some(account))
     }
-    async fn delete_account(&self, query: AccountQuery<'_>) -> StoreResult<bool> {
+    async fn delete_account(&self, filter: AccountFilter<'_>) -> StoreResult<bool> {
         let mut state = self.state.lock().await;
 
         let previous_len = state.accounts.len();
 
-        state.accounts.retain(|account| !match query {
-            AccountQuery::Id(id) => account.id.to_string() == id,
-            AccountQuery::Provider {
+        state.accounts.retain(|account| !match filter {
+            AccountFilter::Id(id) => account.id.to_string() == id,
+            AccountFilter::Provider {
                 provider_id,
                 account_id,
             } => account.provider_id == provider_id && account.account_id == account_id,
-            AccountQuery::UserId(user_id) => account.user_id.to_string() == user_id,
+            AccountFilter::UserId(user_id) => account.user_id.to_string() == user_id,
         });
 
         Ok(state.accounts.len() < previous_len)
@@ -278,14 +274,17 @@ impl AuthDatabase for TestDatabase {
     }
     async fn find_verification(
         &self,
-        query: VerificationQuery<'_>,
+        filter: VerificationFilter<'_>,
     ) -> StoreResult<Option<Verification>> {
         let state = self.state.lock().await;
 
-        let verification = state.verifications.iter().find(|verification| match query {
-            VerificationQuery::Id(id) => verification.id.to_string() == id,
-            VerificationQuery::Identifier(identifier) => verification.identifier == identifier,
-        });
+        let verification = state
+            .verifications
+            .iter()
+            .find(|verification| match filter {
+                VerificationFilter::Id(id) => verification.id.to_string() == id,
+                VerificationFilter::Identifier(identifier) => verification.identifier == identifier,
+            });
 
         Ok(verification.cloned())
     }
@@ -310,14 +309,14 @@ impl AuthDatabase for TestDatabase {
 
         Ok(Some(verification))
     }
-    async fn delete_verification(&self, query: VerificationQuery<'_>) -> StoreResult<bool> {
+    async fn delete_verification(&self, filter: VerificationFilter<'_>) -> StoreResult<bool> {
         let mut state = self.state.lock().await;
 
         let previous_len = state.verifications.len();
 
-        state.verifications.retain(|verification| !match query {
-            VerificationQuery::Id(id) => verification.id.to_string() == id,
-            VerificationQuery::Identifier(identifier) => verification.identifier == identifier,
+        state.verifications.retain(|verification| !match filter {
+            VerificationFilter::Id(id) => verification.id.to_string() == id,
+            VerificationFilter::Identifier(identifier) => verification.identifier == identifier,
         });
 
         Ok(state.verifications.len() < previous_len)

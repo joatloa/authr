@@ -3,6 +3,7 @@ use actix_web::{
     http::{StatusCode, header},
     test, web,
 };
+use chrono::Duration;
 use serde_json::{Value, json};
 
 use authr::{
@@ -11,7 +12,7 @@ use authr::{
         oauth::{Provider, providers::GoogleProvider},
         types::{Account, Session, User},
     },
-    database::store::{AuthDatabase, SessionQuery},
+    database::store::{AuthDatabase, SessionFilter},
     http::router,
 };
 
@@ -30,7 +31,7 @@ async fn create_session(database: &TestDatabase) -> Session {
         .unwrap();
 
     database
-        .create_session(Session::new(user.id, None, None), false)
+        .create_session(Session::new(user.id, None, None), Duration::days(1))
         .await
         .unwrap()
 }
@@ -78,7 +79,7 @@ async fn sign_out_deletes_session_and_clears_cookie() {
 
     // ----- Verify session deletion
     let deleted_session = database
-        .find_session(SessionQuery::Token(&token))
+        .find_session(SessionFilter::Token(&token))
         .await
         .unwrap();
 
@@ -241,7 +242,7 @@ async fn sign_out_redirects_to_provider_logout() {
     // ----- Verify local session was revoked
     assert!(
         database
-            .find_session(SessionQuery::Token(&token))
+            .find_session(SessionFilter::Token(&token))
             .await
             .unwrap()
             .is_none()
@@ -373,7 +374,7 @@ async fn sign_out_without_social_account_only_revokes_session() {
     // ----- Verify local session was revoked
     assert!(
         database
-            .find_session(SessionQuery::Token(&token))
+            .find_session(SessionFilter::Token(&token))
             .await
             .unwrap()
             .is_none()

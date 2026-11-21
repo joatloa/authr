@@ -11,7 +11,7 @@ use authr::{
         oauth::{Provider, types::OAuthTransaction},
         types::Verification,
     },
-    database::store::{AccountQuery, AuthDatabase, SessionQuery, UserQuery, VerificationQuery},
+    database::store::{AccountFilter, AuthDatabase, SessionFilter, UserFilter, VerificationFilter},
     http::router,
 };
 
@@ -86,7 +86,7 @@ async fn sign_in_social_generates_authorization_url() {
 
     // ----- Check OAuth Transaction
     let verification = database
-        .find_verification(VerificationQuery::Identifier(&format!(
+        .find_verification(VerificationFilter::Identifier(&format!(
             "oauth:{}",
             query["state"]
         )))
@@ -364,7 +364,7 @@ async fn callback_creates_user_account_and_session() {
 
     // ----- Check User from Database
     let user = database
-        .find_user(UserQuery::Email("mock@example.com"))
+        .find_user(UserFilter::Email("mock@example.com"))
         .await
         .unwrap()
         .unwrap();
@@ -378,7 +378,7 @@ async fn callback_creates_user_account_and_session() {
 
     // ----- Check Account from Database
     let account = database
-        .find_account(AccountQuery::Provider {
+        .find_account(AccountFilter::Provider {
             provider_id: "mock",
             account_id: "mock-user-123",
         })
@@ -393,7 +393,7 @@ async fn callback_creates_user_account_and_session() {
 
     // ----- Check Session from Database
     let sessions = database
-        .find_sessions(SessionQuery::UserId(&user.id.to_string()))
+        .find_sessions(SessionFilter::UserId(&user.id.to_string()))
         .await
         .unwrap();
 
@@ -422,7 +422,7 @@ async fn callback_links_oauth_account_to_existing_user() {
     assert!(signup_response.status().is_success());
 
     let existing_user = database
-        .find_user(UserQuery::Email("mock@example.com"))
+        .find_user(UserFilter::Email("mock@example.com"))
         .await
         .unwrap()
         .unwrap();
@@ -446,7 +446,7 @@ async fn callback_links_oauth_account_to_existing_user() {
 
     // ----- Check Account Linking
     let account = database
-        .find_account(AccountQuery::Provider {
+        .find_account(AccountFilter::Provider {
             provider_id: "mock",
             account_id: "mock-user-123",
         })
@@ -458,7 +458,7 @@ async fn callback_links_oauth_account_to_existing_user() {
 
     // ----- Check User from Database
     let user = database
-        .find_user(UserQuery::Email("mock@example.com"))
+        .find_user(UserFilter::Email("mock@example.com"))
         .await
         .unwrap()
         .unwrap();

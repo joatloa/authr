@@ -12,8 +12,11 @@ use diesel::{
     r2d2::{ConnectionManager, Pool},
 };
 
-use crate::database::create_pool;
-use crate::database::migrations::run_pending_migrations;
+use crate::database::{
+    create_pool,
+    store::{AccountFilter, UserFilter, VerificationFilter},
+};
+use crate::database::{migrations::run_pending_migrations, store::SessionFilter};
 use crate::{
     core::{
         error::AuthrError,
@@ -26,9 +29,7 @@ use crate::{
             VerificationRow,
         },
         schema::{account, session, user, verification},
-        store::{
-            AccountQuery, AuthDatabase, SessionQuery, StoreResult, UserQuery, VerificationQuery,
-        },
+        store::{AuthDatabase, StoreResult},
     },
 };
 
@@ -91,16 +92,16 @@ impl AuthDatabase for DieselDatabase {
 
         Ok(user_data)
     }
-    async fn find_user(&self, query: UserQuery<'_>) -> StoreResult<Option<User>> {
+    async fn find_user(&self, filter: UserFilter<'_>) -> StoreResult<Option<User>> {
         let mut conn = self.pool.get().map_err(|_| AuthrError::UserLookupFailed)?;
 
-        let row = match query {
-            UserQuery::Id(id) => user::table
+        let row = match filter {
+            UserFilter::Id(id) => user::table
                 .filter(user::id.eq(id))
                 .select(UserRow::as_select())
                 .first::<UserRow>(&mut conn)
                 .optional(),
-            UserQuery::Email(email) => user::table
+            UserFilter::Email(email) => user::table
                 .filter(user::email.eq(email))
                 .select(UserRow::as_select())
                 .first::<UserRow>(&mut conn)
@@ -133,17 +134,17 @@ impl AuthDatabase for DieselDatabase {
 
         Ok(Some(user_data))
     }
-    async fn delete_user(&self, query: UserQuery<'_>) -> StoreResult<bool> {
+    async fn delete_user(&self, filter: UserFilter<'_>) -> StoreResult<bool> {
         let mut conn = self
             .pool
             .get()
             .map_err(|_| AuthrError::UserDeletionFailed)?;
 
-        let affected = match query {
-            UserQuery::Id(id) => {
+        let affected = match filter {
+            UserFilter::Id(id) => {
                 diesel::delete(user::table.filter(user::id.eq(id))).execute(&mut conn)
             }
-            UserQuery::Email(email) => {
+            UserFilter::Email(email) => {
                 diesel::delete(user::table.filter(user::email.eq(email))).execute(&mut conn)
             }
         }
@@ -155,7 +156,7 @@ impl AuthDatabase for DieselDatabase {
     async fn create_session(
         &self,
         mut session_data: Session,
-        remember_me: bool,
+        lifetime: Duration,
     ) -> StoreResult<Session> {
         let mut conn = self
             .pool
@@ -166,15 +167,9 @@ impl AuthDatabase for DieselDatabase {
         let token_hash = hash_str(&session_data.token);
 
         let now = Utc::now();
-        let duration = if remember_me {
-            Duration::days(30)
-        } else {
-            Duration::days(1)
-        };
-
         session_data.created_at = now;
         session_data.updated_at = now;
-        session_data.expires_at = now + duration;
+        session_data.expires_at = now + lifetime;
 
         let new_session = NewSession {
             id: &session_data.id.to_string(),
@@ -194,19 +189,19 @@ impl AuthDatabase for DieselDatabase {
 
         Ok(session_data)
     }
-    async fn find_session(&self, query: SessionQuery<'_>) -> StoreResult<Option<Session>> {
+    async fn find_session(&self, filter: SessionFilter<'_>) -> StoreResult<Option<Session>> {
         let mut conn = self
             .pool
             .get()
             .map_err(|_| AuthrError::SessionLookupFailed)?;
 
-        let row = match query {
-            SessionQuery::Token(token) => session::table
+        let row = match filter {
+            SessionFilter::Token(token) => session::table
                 .filter(session::tokenHash.eq(hash_str(token)))
                 .select(SessionRow::as_select())
                 .first::<SessionRow>(&mut conn)
                 .optional(),
-            SessionQuery::UserId(user_id) => session::table
+            SessionFilter::UserId(user_id) => session::table
                 .filter(session::userId.eq(user_id))
                 .select(SessionRow::as_select())
                 .first::<SessionRow>(&mut conn)
@@ -222,22 +217,22 @@ impl AuthDatabase for DieselDatabase {
             session
         }))
     }
-    async fn find_sessions(&self, query: SessionQuery<'_>) -> StoreResult<Vec<Session>> {
+    async fn find_sessions(&self, filter: SessionFilter<'_>) -> StoreResult<Vec<Session>> {
         let mut conn = self
             .pool
             .get()
             .map_err(|_| AuthrError::SessionLookupFailed)?;
 
-        let row = match query {
-            SessionQuery::Token(token) => session::table
+        let row = match filter {
+            SessionFilter::Token(token) => session::table
                 .filter(session::tokenHash.eq(hash_str(token)))
                 .select(SessionRow::as_select())
                 .load::<SessionRow>(&mut conn),
-            SessionQuery::UserId(user_id) => session::table
+            SessionFilter::UserId(user_id) => session::table
                 .filter(session::userId.eq(user_id))
                 .select(SessionRow::as_select())
                 .load::<SessionRow>(&mut conn),
-            SessionQuery::UserIdExcept {
+            SessionFilter::UserIdExcept {
                 user_id,
                 session_id,
             } => session::table
@@ -285,24 +280,24 @@ impl AuthDatabase for DieselDatabase {
 
         Ok(Some(session_data))
     }
-    async fn delete_session(&self, query: SessionQuery<'_>) -> StoreResult<bool> {
+    async fn delete_session(&self, filter: SessionFilter<'_>) -> StoreResult<bool> {
         let mut conn = self
             .pool
             .get()
             .map_err(|_| AuthrError::SessionDeletionFailed)?;
 
-        let affected = match query {
-            SessionQuery::Token(token) => {
+        let affected = match filter {
+            SessionFilter::Token(token) => {
                 let token_hash = hash_str(token);
 
                 diesel::delete(session::table.filter(session::tokenHash.eq(token_hash)))
                     .execute(&mut conn)
             }
-            SessionQuery::UserId(user_id) => {
+            SessionFilter::UserId(user_id) => {
                 diesel::delete(session::table.filter(session::userId.eq(user_id)))
                     .execute(&mut conn)
             }
-            SessionQuery::UserIdExcept {
+            SessionFilter::UserIdExcept {
                 user_id,
                 session_id,
             } => diesel::delete(
@@ -324,6 +319,7 @@ impl AuthDatabase for DieselDatabase {
             .map_err(|_| AuthrError::AccountCreationFailed)?;
 
         let now = Utc::now();
+        account_data.created_at = now;
         account_data.updated_at = now;
 
         let new_account = NewAccount {
@@ -349,19 +345,19 @@ impl AuthDatabase for DieselDatabase {
 
         Ok(account_data)
     }
-    async fn find_account(&self, query: AccountQuery<'_>) -> StoreResult<Option<Account>> {
+    async fn find_account(&self, filter: AccountFilter<'_>) -> StoreResult<Option<Account>> {
         let mut conn = self
             .pool
             .get()
             .map_err(|_| AuthrError::AccountLookupFailed)?;
 
-        let row = match query {
-            AccountQuery::Id(id) => account::table
+        let row = match filter {
+            AccountFilter::Id(id) => account::table
                 .filter(account::id.eq(id))
                 .select(AccountRow::as_select())
                 .first::<AccountRow>(&mut conn)
                 .optional(),
-            AccountQuery::Provider {
+            AccountFilter::Provider {
                 provider_id,
                 account_id,
             } => account::table
@@ -370,7 +366,7 @@ impl AuthDatabase for DieselDatabase {
                 .select(AccountRow::as_select())
                 .first::<AccountRow>(&mut conn)
                 .optional(),
-            AccountQuery::UserId(user_id) => account::table
+            AccountFilter::UserId(user_id) => account::table
                 .filter(account::userId.eq(user_id))
                 .select(AccountRow::as_select())
                 .first::<AccountRow>(&mut conn)
@@ -380,18 +376,18 @@ impl AuthDatabase for DieselDatabase {
 
         Ok(row.map(Account::from))
     }
-    async fn find_accounts(&self, query: AccountQuery<'_>) -> StoreResult<Vec<Account>> {
+    async fn find_accounts(&self, filter: AccountFilter<'_>) -> StoreResult<Vec<Account>> {
         let mut conn = self
             .pool
             .get()
             .map_err(|_| AuthrError::AccountLookupFailed)?;
 
-        let row = match query {
-            AccountQuery::Id(id) => account::table
+        let row = match filter {
+            AccountFilter::Id(id) => account::table
                 .filter(account::id.eq(id))
                 .select(AccountRow::as_select())
                 .load::<AccountRow>(&mut conn),
-            AccountQuery::Provider {
+            AccountFilter::Provider {
                 provider_id,
                 account_id,
             } => account::table
@@ -399,7 +395,7 @@ impl AuthDatabase for DieselDatabase {
                 .filter(account::accountId.eq(account_id))
                 .select(AccountRow::as_select())
                 .load::<AccountRow>(&mut conn),
-            AccountQuery::UserId(user_id) => account::table
+            AccountFilter::UserId(user_id) => account::table
                 .filter(account::userId.eq(user_id))
                 .select(AccountRow::as_select())
                 .load::<AccountRow>(&mut conn),
@@ -443,17 +439,17 @@ impl AuthDatabase for DieselDatabase {
 
         Ok(Some(account_data))
     }
-    async fn delete_account(&self, query: AccountQuery<'_>) -> StoreResult<bool> {
+    async fn delete_account(&self, filter: AccountFilter<'_>) -> StoreResult<bool> {
         let mut conn = self
             .pool
             .get()
             .map_err(|_| AuthrError::AccountDeletionFailed)?;
 
-        let affected = match query {
-            AccountQuery::Id(id) => {
+        let affected = match filter {
+            AccountFilter::Id(id) => {
                 diesel::delete(account::table.filter(account::id.eq(id))).execute(&mut conn)
             }
-            AccountQuery::Provider {
+            AccountFilter::Provider {
                 provider_id,
                 account_id,
             } => diesel::delete(
@@ -462,7 +458,7 @@ impl AuthDatabase for DieselDatabase {
                     .filter(account::accountId.eq(account_id)),
             )
             .execute(&mut conn),
-            AccountQuery::UserId(user_id) => {
+            AccountFilter::UserId(user_id) => {
                 diesel::delete(account::table.filter(account::userId.eq(user_id)))
                     .execute(&mut conn)
             }
@@ -502,20 +498,20 @@ impl AuthDatabase for DieselDatabase {
     }
     async fn find_verification(
         &self,
-        query: VerificationQuery<'_>,
+        filter: VerificationFilter<'_>,
     ) -> StoreResult<Option<Verification>> {
         let mut conn = self
             .pool
             .get()
             .map_err(|_| AuthrError::VerificationLookupFailed)?;
 
-        let row = match query {
-            VerificationQuery::Id(id) => verification::table
+        let row = match filter {
+            VerificationFilter::Id(id) => verification::table
                 .filter(verification::id.eq(id))
                 .select(VerificationRow::as_select())
                 .first::<VerificationRow>(&mut conn)
                 .optional(),
-            VerificationQuery::Identifier(identifier) => verification::table
+            VerificationFilter::Identifier(identifier) => verification::table
                 .filter(verification::identifier.eq(identifier))
                 .select(VerificationRow::as_select())
                 .first::<VerificationRow>(&mut conn)
@@ -555,18 +551,18 @@ impl AuthDatabase for DieselDatabase {
 
         Ok(Some(verification_data))
     }
-    async fn delete_verification(&self, query: VerificationQuery<'_>) -> StoreResult<bool> {
+    async fn delete_verification(&self, filter: VerificationFilter<'_>) -> StoreResult<bool> {
         let mut conn = self
             .pool
             .get()
             .map_err(|_| AuthrError::VerificationDeletionFailed)?;
 
-        let affected = match query {
-            VerificationQuery::Id(id) => {
+        let affected = match filter {
+            VerificationFilter::Id(id) => {
                 diesel::delete(verification::table.filter(verification::id.eq(id)))
                     .execute(&mut conn)
             }
-            VerificationQuery::Identifier(identifier) => {
+            VerificationFilter::Identifier(identifier) => {
                 diesel::delete(verification::table.filter(verification::identifier.eq(identifier)))
                     .execute(&mut conn)
             }

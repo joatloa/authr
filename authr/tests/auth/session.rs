@@ -11,7 +11,7 @@ use authr::{
         auth::{AuthrContext, SocialProviders},
         types::{Session, User},
     },
-    database::store::{AuthDatabase, SessionQuery},
+    database::store::{AuthDatabase, SessionFilter},
     http::router,
 };
 
@@ -33,7 +33,7 @@ async fn create_user(database: &TestDatabase) -> User {
 
 async fn create_session(database: &TestDatabase, user_id: uuid::Uuid) -> Session {
     database
-        .create_session(Session::new(user_id, None, None), false)
+        .create_session(Session::new(user_id, None, None), Duration::days(1))
         .await
         .unwrap()
 }
@@ -134,7 +134,7 @@ async fn get_session_returns_null_and_deletes_expired_session() {
 
     // ----- Check Session from Database
     let stored_session = database
-        .find_session(SessionQuery::Token(&token))
+        .find_session(SessionFilter::Token(&token))
         .await
         .unwrap();
 
@@ -231,7 +231,7 @@ async fn revoke_session_deletes_target_session() {
 
     // ----- Check Target Session from Database
     let target_session = database
-        .find_session(SessionQuery::Token(&target_token))
+        .find_session(SessionFilter::Token(&target_token))
         .await
         .unwrap();
 
@@ -239,7 +239,7 @@ async fn revoke_session_deletes_target_session() {
 
     // ----- Check Current Session from Database
     let current_session = database
-        .find_session(SessionQuery::Token(&current.token))
+        .find_session(SessionFilter::Token(&current.token))
         .await
         .unwrap();
 
@@ -282,7 +282,7 @@ async fn revoke_session_rejects_another_users_session() {
 
     // ----- Check Target Session from Database
     let target_session = database
-        .find_session(SessionQuery::Token(&target.token))
+        .find_session(SessionFilter::Token(&target.token))
         .await
         .unwrap();
 
@@ -358,7 +358,7 @@ async fn revoke_sessions_deletes_all_user_sessions_and_clears_cookie() {
     // ----- Check Sessions from Database
     for token in [&first_token, &second_token, &third_token] {
         let session = database
-            .find_session(SessionQuery::Token(token))
+            .find_session(SessionFilter::Token(token))
             .await
             .unwrap();
 
@@ -419,7 +419,7 @@ async fn revoke_other_sessions_preserves_current_session() {
 
     // ----- Check Current Session from Database
     let current_session = database
-        .find_session(SessionQuery::Token(&current.token))
+        .find_session(SessionFilter::Token(&current.token))
         .await
         .unwrap();
 
@@ -427,12 +427,12 @@ async fn revoke_other_sessions_preserves_current_session() {
 
     // ----- Check Other Sessions from Database
     let second_session = database
-        .find_session(SessionQuery::Token(&second_token))
+        .find_session(SessionFilter::Token(&second_token))
         .await
         .unwrap();
 
     let third_session = database
-        .find_session(SessionQuery::Token(&third_token))
+        .find_session(SessionFilter::Token(&third_token))
         .await
         .unwrap();
 
@@ -475,7 +475,7 @@ async fn revoke_other_sessions_does_not_revoke_another_users_sessions() {
 
     // ----- Check Other User's Session from Database
     let stored_session = database
-        .find_session(SessionQuery::Token(&other_user_session.token))
+        .find_session(SessionFilter::Token(&other_user_session.token))
         .await
         .unwrap();
 

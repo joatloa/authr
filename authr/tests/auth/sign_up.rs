@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use authr::{
     core::auth::{AuthrContext, SocialProviders},
-    database::store::{AccountQuery, AuthDatabase, SessionQuery, UserQuery},
+    database::store::{AccountFilter, AuthDatabase, SessionFilter, UserFilter},
     http::router,
 };
 
@@ -42,7 +42,7 @@ async fn sign_up_creates_user_account_and_session() {
 
     // ----- Check User from Database
     let user = database
-        .find_user(UserQuery::Id(user_id))
+        .find_user(UserFilter::Id(user_id))
         .await
         .unwrap()
         .unwrap();
@@ -52,7 +52,7 @@ async fn sign_up_creates_user_account_and_session() {
 
     // ----- Check Account from Database
     let account = database
-        .find_account(AccountQuery::UserId(user_id))
+        .find_account(AccountFilter::UserId(user_id))
         .await
         .unwrap()
         .unwrap();
@@ -62,7 +62,7 @@ async fn sign_up_creates_user_account_and_session() {
 
     // ----- Check Session from Database
     let session = database
-        .find_session(SessionQuery::UserId(user_id))
+        .find_session(SessionFilter::UserId(user_id))
         .await
         .unwrap()
         .unwrap();
@@ -91,7 +91,7 @@ async fn sign_up_normalizes_email_to_lowercase() {
 
     // ----- Check User from Database
     let user = database
-        .find_user(UserQuery::Email("test@example.com"))
+        .find_user(UserFilter::Email("test@example.com"))
         .await
         .unwrap();
 
@@ -134,12 +134,12 @@ async fn sign_up_returns_generic_response_for_existing_email() {
 
     // ----- Check only first user exists in database
     let existing_user = database
-        .find_user(UserQuery::Id(first_user_id))
+        .find_user(UserFilter::Id(first_user_id))
         .await
         .unwrap();
 
     let synthetic_user = database
-        .find_user(UserQuery::Id(second_user_id))
+        .find_user(UserFilter::Id(second_user_id))
         .await
         .unwrap();
 
@@ -268,7 +268,7 @@ async fn sign_up_creates_long_lived_session_when_remember_me_is_true() {
     let user_id = body["user"]["id"].as_str().unwrap();
 
     let session = database
-        .find_session(SessionQuery::UserId(user_id))
+        .find_session(SessionFilter::UserId(user_id))
         .await
         .unwrap()
         .unwrap();
@@ -299,7 +299,7 @@ async fn sign_up_creates_short_lived_session_when_remember_me_is_false() {
     let user_id = body["user"]["id"].as_str().unwrap();
 
     let session = database
-        .find_session(SessionQuery::UserId(user_id))
+        .find_session(SessionFilter::UserId(user_id))
         .await
         .unwrap()
         .unwrap();
@@ -334,13 +334,13 @@ async fn sign_up_without_auto_sign_in_does_not_create_session() {
     let user_id = body["user"]["id"].as_str().unwrap();
 
     // ----- Check User from Database
-    let user = database.find_user(UserQuery::Id(user_id)).await.unwrap();
+    let user = database.find_user(UserFilter::Id(user_id)).await.unwrap();
 
     assert!(user.is_some());
 
     // ----- Check Account from Database
     let account = database
-        .find_account(AccountQuery::UserId(user_id))
+        .find_account(AccountFilter::UserId(user_id))
         .await
         .unwrap();
 
@@ -348,7 +348,7 @@ async fn sign_up_without_auto_sign_in_does_not_create_session() {
 
     // ----- Check Session from Database
     let session = database
-        .find_session(SessionQuery::UserId(user_id))
+        .find_session(SessionFilter::UserId(user_id))
         .await
         .unwrap();
 

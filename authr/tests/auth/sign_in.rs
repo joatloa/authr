@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use authr::{
     core::auth::{AuthrContext, SocialProviders},
-    database::store::{AuthDatabase, SessionQuery},
+    database::store::{AuthDatabase, SessionFilter},
     http::router,
 };
 
@@ -71,7 +71,7 @@ async fn sign_in_creates_session_and_sets_cookie() {
     let token = body["token"].as_str().unwrap();
 
     let session = database
-        .find_session(SessionQuery::Token(token))
+        .find_session(SessionFilter::Token(token))
         .await
         .unwrap();
 
@@ -116,7 +116,7 @@ async fn sign_in_stores_user_agent() {
 
     // ----- Verify session metadata
     let session = database
-        .find_session(SessionQuery::Token(token))
+        .find_session(SessionFilter::Token(token))
         .await
         .unwrap()
         .unwrap();
@@ -162,7 +162,7 @@ async fn sign_in_respects_remember_me() {
 
     // ----- Verify session expiration
     let session = database
-        .find_session(SessionQuery::Token(token))
+        .find_session(SessionFilter::Token(token))
         .await
         .unwrap()
         .unwrap();
