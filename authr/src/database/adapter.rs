@@ -201,20 +201,17 @@ impl AuthDatabase for DieselDatabase {
             .map_err(|_| AuthrError::SessionLookupFailed)?;
 
         let row = match query {
-            SessionQuery::Token(token) => {
-                let token_hash = hash_str(token);
-
-                session::table
-                    .filter(session::tokenHash.eq(token_hash))
-                    .select(SessionRow::as_select())
-                    .first::<SessionRow>(&mut conn)
-                    .optional()
-            }
+            SessionQuery::Token(token) => session::table
+                .filter(session::tokenHash.eq(hash_str(token)))
+                .select(SessionRow::as_select())
+                .first::<SessionRow>(&mut conn)
+                .optional(),
             SessionQuery::UserId(user_id) => session::table
                 .filter(session::userId.eq(user_id))
                 .select(SessionRow::as_select())
                 .first::<SessionRow>(&mut conn)
                 .optional(),
+            _ => unreachable!(),
         }
         .map_err(|_| AuthrError::SessionLookupFailed)?;
 
@@ -224,6 +221,42 @@ impl AuthDatabase for DieselDatabase {
             session.token.clear();
             session
         }))
+    }
+    async fn find_sessions(&self, query: SessionQuery<'_>) -> StoreResult<Vec<Session>> {
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|_| AuthrError::SessionLookupFailed)?;
+
+        let row = match query {
+            SessionQuery::Token(token) => session::table
+                .filter(session::tokenHash.eq(hash_str(token)))
+                .select(SessionRow::as_select())
+                .load::<SessionRow>(&mut conn),
+            SessionQuery::UserId(user_id) => session::table
+                .filter(session::userId.eq(user_id))
+                .select(SessionRow::as_select())
+                .load::<SessionRow>(&mut conn),
+            SessionQuery::UserIdExcept {
+                user_id,
+                session_id,
+            } => session::table
+                .filter(session::userId.eq(user_id))
+                .filter(session::id.ne(session_id))
+                .select(SessionRow::as_select())
+                .load::<SessionRow>(&mut conn),
+        }
+        .map_err(|_| AuthrError::SessionLookupFailed)?;
+
+        Ok(row
+            .into_iter()
+            .map(|row| {
+                let mut session = Session::from(row);
+                // The raw token cannot be recovered from its stored hash.
+                session.token.clear();
+                session
+            })
+            .collect())
     }
     async fn update_session(&self, mut session_data: Session) -> StoreResult<Option<Session>> {
         let mut conn = self
@@ -269,6 +302,15 @@ impl AuthDatabase for DieselDatabase {
                 diesel::delete(session::table.filter(session::userId.eq(user_id)))
                     .execute(&mut conn)
             }
+            SessionQuery::UserIdExcept {
+                user_id,
+                session_id,
+            } => diesel::delete(
+                session::table
+                    .filter(session::userId.eq(user_id))
+                    .filter(session::id.ne(session_id)),
+            )
+            .execute(&mut conn),
         }
         .map_err(|_| AuthrError::SessionDeletionFailed)?;
 

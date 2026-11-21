@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::{
     core::{
-        auth::AuthrData,
+        auth::AuthrContext,
         error::AuthrError,
         oauth::{
             OAuthProvider,
@@ -14,7 +14,7 @@ use crate::{
         types::{Account, Session, User},
         utils::get_base_url,
     },
-    database::store::{AccountQuery, AuthDatabase, UserQuery},
+    database::store::AuthDatabase,
     http::utils::get_session_cookie,
 };
 
@@ -39,7 +39,7 @@ pub struct OAuthCallbackQuery {
 pub async fn callback<D: AuthDatabase + 'static>(
     req: HttpRequest,
     query: web::Query<OAuthCallbackQuery>,
-    data: web::Data<AuthrData<D>>,
+    ctx: web::Data<AuthrContext<D>>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, AuthrError> {
     let provider_id = path.into_inner();
@@ -52,10 +52,10 @@ pub async fn callback<D: AuthDatabase + 'static>(
     } = query.into_inner();
 
     // ----- Create closure to redirect when an error happens
-    let mut error_url = get_base_url(&data.config.base_url, &req)?;
+    let mut error_url = get_base_url(&ctx.config().base_url, &req)?;
     error_url.set_path(&format!(
         "{}/error",
-        data.config.base_path.trim_end_matches('/')
+        ctx.config().base_path.trim_end_matches('/')
     ));
 
     let redirect_error = |error: &str, error_description: Option<String>| -> HttpResponse {
@@ -100,7 +100,7 @@ pub async fn callback<D: AuthDatabase + 'static>(
     // Retrieve and consume the OAuth transaction.
     let identifier = format!("oauth:{state}");
 
-    let verification = match data.database.consume_verification(&identifier).await {
+    let verification = match ctx.store().consume_verification(&identifier).await {
         Ok(Some(verification)) => verification,
         Ok(None) => {
             tracing::warn!(
@@ -156,7 +156,7 @@ pub async fn callback<D: AuthDatabase + 'static>(
     }
 
     // ----- Provider Resolution
-    let Some(provider) = data.config.social_providers.get(&provider_id) else {
+    let Some(provider) = ctx.config().social_providers.get(&provider_id) else {
         tracing::warn!(
             provider = %provider_id,
             "OAuth provider is not configured"
@@ -176,8 +176,8 @@ pub async fn callback<D: AuthDatabase + 'static>(
 
     // ----- Build Callback URL
     let redirect_uri = match get_provider_callback_url(
-        &data.config.base_url,
-        &data.config.base_path,
+        &ctx.config().base_url,
+        &ctx.config().base_path,
         &req,
         provider.id(),
     ) {
@@ -241,7 +241,7 @@ pub async fn callback<D: AuthDatabase + 'static>(
         return Ok(redirect_error("email_not_found", None));
     }
 
-    let user = match resolve_oauth_user(&data, &provider_id, &provider_user, &tokens).await {
+    let user = match resolve_oauth_user(&ctx, &provider_id, &provider_user, &tokens).await {
         Ok(user) => user,
         Err(error) => {
             tracing::error!(
@@ -262,8 +262,8 @@ pub async fn callback<D: AuthDatabase + 'static>(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
 
-    let session = match data
-        .database
+    let session = match ctx
+        .store()
         .create_session(Session::new(user.id, ip_address, user_agent), true)
         .await
     {
@@ -313,18 +313,15 @@ pub async fn callback<D: AuthDatabase + 'static>(
     err
 )]
 async fn resolve_oauth_user<D: AuthDatabase + 'static>(
-    data: &AuthrData<D>,
+    ctx: &AuthrContext<D>,
     provider_id: &str,
     provider_user: &ProviderUser,
     tokens: &TokenResponse,
 ) -> Result<User, AuthrError> {
     // ----- Existing Account
-    if let Some(account) = data
-        .database
-        .find_account(AccountQuery::Provider {
-            provider_id,
-            account_id: &provider_user.id,
-        })
+    if let Some(account) = ctx
+        .store()
+        .find_account_by_provider(provider_id, &provider_user.id)
         .await?
     {
         tracing::debug!(
@@ -332,9 +329,9 @@ async fn resolve_oauth_user<D: AuthDatabase + 'static>(
             "Existing OAuth account found"
         );
 
-        return data
-            .database
-            .find_user(UserQuery::Id(&account.user_id.to_string()))
+        return ctx
+            .store()
+            .find_user_by_id(&account.user_id.to_string())
             .await?
             .ok_or(AuthrError::UserNotFound);
     }
@@ -345,7 +342,7 @@ async fn resolve_oauth_user<D: AuthDatabase + 'static>(
         .as_deref()
         .ok_or(AuthrError::InvalidEmail)?;
 
-    let user = match data.database.find_user(UserQuery::Email(email)).await? {
+    let user = match ctx.store().find_user_by_email(email).await? {
         Some(user) => {
             tracing::debug!(
                 provider = %provider_id,
@@ -357,8 +354,8 @@ async fn resolve_oauth_user<D: AuthDatabase + 'static>(
 
         // If user doesn't exist, create one.
         None => {
-            let user = data
-                .database
+            let user = ctx
+                .store()
                 .create_user(User::new(
                     provider_user.name.clone().unwrap_or_default(),
                     email.to_string(),
@@ -377,7 +374,7 @@ async fn resolve_oauth_user<D: AuthDatabase + 'static>(
     };
 
     // ----- Account Linking
-    data.database
+    ctx.store()
         .create_account(Account::new_social(
             user.id,
             provider_id.to_string(),

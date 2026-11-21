@@ -7,66 +7,14 @@ use chrono::Duration;
 use serde_json::{Value, json};
 
 use authr::{
-    core::{
-        auth::{AuthrConfig, AuthrData, BaseUrl, EmailAndPassword, SocialProviders},
-        utils::create_argon,
-    },
+    core::auth::{AuthrContext, SocialProviders},
     database::store::{AuthDatabase, SessionQuery},
     http::router,
 };
 
-use crate::common::{TestDatabase, init_tracing};
-
-// ----- Test setup
-fn config() -> AuthrConfig {
-    AuthrConfig {
-        app_name: "Authr Tests".to_string(),
-        base_url: BaseUrl::Link {
-            host: "http://localhost:3000".to_string(),
-        },
-        database_url: String::new(),
-        base_path: "/api/auth".to_string(),
-        email_and_password: EmailAndPassword::default(),
-        social_providers: SocialProviders::new(vec![]),
-        secret: "test-secret-that-is-long-enough-for-testing".to_string(),
-        disable_logs: true,
-    }
-}
-
-macro_rules! test_app {
-    ($database:expr) => {{
-        let data = web::Data::new(AuthrData {
-            database: $database.clone(),
-            config: config(),
-            argon: create_argon(),
-        });
-
-        test::init_service(
-            App::new()
-                .app_data(data)
-                .service(web::scope("/api/auth").configure(router::config::<TestDatabase>)),
-        )
-        .await
-    }};
-}
-
-macro_rules! sign_up_user {
-    ($app:expr) => {{
-        let request = test::TestRequest::post()
-            .uri("/api/auth/sign-up")
-            .set_json(json!({
-                "name": "Test User",
-                "email": "test@example.com",
-                "password": "password123"
-            }))
-            .to_request();
-
-        test::call_service(&$app, request).await
-    }};
-}
+use crate::common::{TestDatabase, config, init_tracing, sign_up_user, test_app};
 
 // ----- Tests
-
 #[actix_web::test]
 async fn sign_in_creates_session_and_sets_cookie() {
     // ----- Setup
@@ -75,7 +23,14 @@ async fn sign_in_creates_session_and_sets_cookie() {
     let database = TestDatabase::default();
     let app = test_app!(database);
 
-    let sign_up_response = sign_up_user!(app);
+    let sign_up_response = sign_up_user!(
+        app,
+        json!({
+            "name": "Test User",
+            "email": "test@example.com",
+            "password": "password123"
+        })
+    );
     assert_eq!(sign_up_response.status(), StatusCode::CREATED);
 
     // ----- Send sign-in request
@@ -131,7 +86,14 @@ async fn sign_in_stores_user_agent() {
     let database = TestDatabase::default();
     let app = test_app!(database);
 
-    let sign_up_response = sign_up_user!(app);
+    let sign_up_response = sign_up_user!(
+        app,
+        json!({
+            "name": "Test User",
+            "email": "test@example.com",
+            "password": "password123"
+        })
+    );
     assert_eq!(sign_up_response.status(), StatusCode::CREATED);
 
     // ----- Send sign-in request
@@ -170,7 +132,14 @@ async fn sign_in_respects_remember_me() {
     let database = TestDatabase::default();
     let app = test_app!(database);
 
-    let sign_up_response = sign_up_user!(app);
+    let sign_up_response = sign_up_user!(
+        app,
+        json!({
+            "name": "Test User",
+            "email": "test@example.com",
+            "password": "password123"
+        })
+    );
     assert_eq!(sign_up_response.status(), StatusCode::CREATED);
 
     // ----- Send sign-in request
@@ -209,7 +178,14 @@ async fn sign_in_with_invalid_password_fails() {
     let database = TestDatabase::default();
     let app = test_app!(database);
 
-    let sign_up_response = sign_up_user!(app);
+    let sign_up_response = sign_up_user!(
+        app,
+        json!({
+            "name": "Test User",
+            "email": "test@example.com",
+            "password": "password123"
+        })
+    );
     assert_eq!(sign_up_response.status(), StatusCode::CREATED);
 
     // ----- Send sign-in request

@@ -17,6 +17,10 @@ pub enum UserQuery<'a> {
 pub enum SessionQuery<'a> {
     Token(&'a str),
     UserId(&'a str),
+    UserIdExcept {
+        user_id: &'a str,
+        session_id: &'a str,
+    },
 }
 
 pub enum AccountQuery<'a> {
@@ -46,6 +50,7 @@ pub trait AuthDatabase: Send + Sync {
     // ----- Sessions
     async fn create_session(&self, session: Session, remember_me: bool) -> StoreResult<Session>;
     async fn find_session(&self, query: SessionQuery<'_>) -> StoreResult<Option<Session>>;
+    async fn find_sessions(&self, query: SessionQuery<'_>) -> StoreResult<Vec<Session>>;
     async fn update_session(&self, session: Session) -> StoreResult<Option<Session>>;
     async fn delete_session(&self, query: SessionQuery<'_>) -> StoreResult<bool>;
 

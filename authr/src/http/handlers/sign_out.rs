@@ -1,16 +1,11 @@
-use actix_web::{
-    HttpRequest, HttpResponse, Responder,
-    cookie::{Cookie, SameSite},
-    http::header,
-    web,
-};
+use actix_web::{HttpRequest, HttpResponse, Responder, http::header, web};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    core::{auth::AuthrData, oauth::OAuthProvider, utils::get_base_url},
-    database::store::{AccountQuery, AuthDatabase, SessionQuery},
-    http::utils::SESSION_COOKIE_NAME,
+    core::{auth::AuthrContext, oauth::OAuthProvider, utils::get_base_url},
+    database::store::AuthDatabase,
+    http::utils::{SESSION_COOKIE_NAME, get_removal_session_cookie},
 };
 
 #[derive(Debug, Deserialize)]
@@ -36,7 +31,7 @@ pub struct SignOutRequest {
 )]
 pub async fn sign_out<D: AuthDatabase + 'static>(
     req: HttpRequest,
-    data: web::Data<AuthrData<D>>,
+    ctx: web::Data<AuthrContext<D>>,
     body: web::Json<SignOutRequest>,
 ) -> impl Responder {
     let SignOutRequest {
@@ -58,7 +53,7 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
 
     // ----- Read current session
     let current_session = if let Some(token) = &session_token {
-        match data.database.find_session(SessionQuery::Token(token)).await {
+        match ctx.store().find_session_by_token(token).await {
             Ok(Some(session)) => {
                 tracing::debug!(
                     session_id = %session.id,
@@ -85,11 +80,7 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
 
     // ----- Revoke session
     if let Some(token) = &session_token {
-        match data
-            .database
-            .delete_session(SessionQuery::Token(token))
-            .await
-        {
+        match ctx.store().delete_session_by_token(token).await {
             Ok(true) => {
                 tracing::info!("Session revoked successfully");
             }
@@ -106,14 +97,7 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
     }
 
     // ----- Clear session cookie
-    let mut cookie = Cookie::build(SESSION_COOKIE_NAME, "")
-        .http_only(true)
-        .secure(true)
-        .same_site(SameSite::Lax)
-        .path("/")
-        .finish();
-
-    cookie.make_removal();
+    let cookie = get_removal_session_cookie();
 
     tracing::debug!("Session cookie scheduled for removal");
 
@@ -126,7 +110,7 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
 
         create_provider_logout_url(
             &req,
-            &data,
+            &ctx,
             session.user_id,
             callback_url.as_deref(),
             state.as_deref(),
@@ -173,15 +157,15 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
 )]
 async fn create_provider_logout_url<D: AuthDatabase + 'static>(
     req: &HttpRequest,
-    data: &web::Data<AuthrData<D>>,
+    ctx: &web::Data<AuthrContext<D>>,
     user_id: uuid::Uuid,
     callback_url: Option<&str>,
     state: Option<&str>,
 ) -> Option<String> {
     // ----- Find linked accounts
-    let accounts = match data
-        .database
-        .find_accounts(AccountQuery::UserId(&user_id.to_string()))
+    let accounts = match ctx
+        .store()
+        .find_accounts_by_user_id(&user_id.to_string())
         .await
     {
         Ok(accounts) => {
@@ -201,7 +185,7 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
     let mut accounts: Vec<_> = accounts
         .into_iter()
         .filter(|account| {
-            data.config
+            ctx.config()
                 .social_providers
                 .get(&account.provider_id)
                 .is_some_and(|provider| provider.supports_end_session())
@@ -219,7 +203,7 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
     // ----- Resolve post-logout redirect URI
     let post_logout_redirect_uri = match callback_url {
         Some(callback_url) => {
-            let base_url = match get_base_url(&data.config.base_url, req) {
+            let base_url = match get_base_url(&ctx.config().base_url, req) {
                 Ok(url) => {
                     tracing::debug!(%url, "Resolved base URL for provider logout");
                     url
@@ -264,7 +248,7 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
             continue;
         }
 
-        let Some(provider) = data.config.social_providers.get(&account.provider_id) else {
+        let Some(provider) = ctx.config().social_providers.get(&account.provider_id) else {
             tracing::debug!(
                 provider = %account.provider_id,
                 "Provider configuration not found"

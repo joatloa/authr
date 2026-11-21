@@ -7,51 +7,17 @@ use serde_json::{Value, json};
 
 use authr::{
     core::{
-        auth::{AuthrConfig, AuthrData, BaseUrl, EmailAndPassword, SocialProviders},
+        auth::{AuthrConfig, AuthrContext, BaseUrl, EmailAndPassword, SocialProviders},
         oauth::{Provider, providers::GoogleProvider},
         types::{Account, Session, User},
-        utils::create_argon,
     },
     database::store::{AuthDatabase, SessionQuery},
     http::router,
 };
 
-use crate::common::{TestDatabase, init_tracing};
+use crate::common::{TestDatabase, config, init_tracing, test_app};
 
 // ----- Helpers
-fn config() -> AuthrConfig {
-    AuthrConfig {
-        app_name: "Authr Tests".to_string(),
-        base_url: BaseUrl::from("http://localhost:3000"),
-        base_path: "/api/auth".to_string(),
-        database_url: String::new(),
-        secret: "test-secret-that-is-long-enough-for-testing".to_string(),
-        email_and_password: EmailAndPassword::default(),
-        social_providers: SocialProviders::new(vec![]),
-        disable_logs: true,
-    }
-}
-
-macro_rules! test_app {
-    ($database:expr) => {
-        test_app!($database, config())
-    };
-    ($database:expr, $config:expr) => {{
-        let data = web::Data::new(AuthrData {
-            database: $database.clone(),
-            config: $config,
-            argon: create_argon(),
-        });
-
-        test::init_service(
-            App::new()
-                .app_data(data)
-                .service(web::scope("/api/auth").configure(router::config::<TestDatabase>)),
-        )
-        .await
-    }};
-}
-
 async fn create_session(database: &TestDatabase) -> Session {
     let user = database
         .create_user(User::new(

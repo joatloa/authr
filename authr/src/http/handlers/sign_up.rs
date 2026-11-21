@@ -5,12 +5,12 @@ use serde_json::json;
 
 use crate::{
     core::{
-        auth::AuthrData,
+        auth::AuthrContext,
         error::AuthrError,
         types::{Account, Session, User},
         utils::hash_password_async,
     },
-    database::store::{AuthDatabase, UserQuery},
+    database::store::AuthDatabase,
     http::utils::get_session_cookie,
 };
 
@@ -35,13 +35,13 @@ pub struct RegisterRequest {
     skip_all,
     fields(
         remember_me = body.remember_me,
-        auto_sign_in = data.config.email_and_password.auto_sign_in
+        auto_sign_in = ctx.config().email_and_password.auto_sign_in
     ),
     err
 )]
 pub async fn sign_up<D: AuthDatabase + 'static>(
     req: HttpRequest,
-    data: web::Data<AuthrData<D>>,
+    ctx: web::Data<AuthrContext<D>>,
     body: web::Json<RegisterRequest>,
 ) -> Result<HttpResponse, AuthrError> {
     let RegisterRequest {
@@ -54,8 +54,8 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
 
     let email = email.trim().to_lowercase();
 
-    let should_return_generic_duplicate_response = !data.config.email_and_password.auto_sign_in;
-    let should_skip_auto_sign_in = !data.config.email_and_password.auto_sign_in;
+    let should_return_generic_duplicate_response = !ctx.config().email_and_password.auto_sign_in;
+    let should_skip_auto_sign_in = !ctx.config().email_and_password.auto_sign_in;
 
     // ----- Check request body
     if !EmailAddress::is_valid(&email) {
@@ -63,8 +63,8 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
         return Err(AuthrError::InvalidEmail);
     }
 
-    if password.len() < data.config.email_and_password.min_password_length
-        || password.len() > data.config.email_and_password.max_password_length
+    if password.len() < ctx.config().email_and_password.min_password_length
+        || password.len() > ctx.config().email_and_password.max_password_length
     {
         tracing::debug!("Registration rejected: invalid password length");
         return Err(AuthrError::InvalidPassword);
@@ -76,7 +76,7 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
     }
 
     // ----- Check if user already exists
-    let db_user = data.database.find_user(UserQuery::Email(&email)).await?;
+    let db_user = ctx.store().find_user_by_email(&email).await?;
 
     if db_user.is_some() {
         tracing::warn!(
@@ -85,17 +85,17 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
         );
 
         if should_return_generic_duplicate_response {
-            return Ok(build_generic_duplicate_response(data, name, email, password, image).await);
+            return Ok(build_generic_duplicate_response(ctx, name, email, password, image).await);
         }
 
         return Err(AuthrError::UserAlreadyExists);
     }
 
     // ----- Create user
-    let password_hash = hash_password_async(data.argon.clone(), password.clone()).await?;
+    let password_hash = hash_password_async(ctx.argon().clone(), password.clone()).await?;
 
-    let created_user = match data
-        .database
+    let created_user = match ctx
+        .store()
         .create_user(User::new(name.clone(), email.clone(), false, image.clone()))
         .await
     {
@@ -111,7 +111,7 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
 
             if should_return_generic_duplicate_response {
                 return Ok(
-                    build_generic_duplicate_response(data, name, email, password, image).await,
+                    build_generic_duplicate_response(ctx, name, email, password, image).await,
                 );
             }
 
@@ -120,8 +120,8 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
     };
 
     // ----- Link created user with a credential account
-    if let Err(error) = data
-        .database
+    if let Err(error) = ctx
+        .store()
         .create_account(Account::new_credential(created_user.id, password_hash))
         .await
     {
@@ -166,8 +166,8 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
         .and_then(|ua| ua.to_str().ok())
         .map(String::from);
 
-    let session = match data
-        .database
+    let session = match ctx
+        .store()
         .create_session(
             Session::new(created_user.id, ip_address, user_agent),
             remember_me,
@@ -216,13 +216,13 @@ pub async fn sign_up<D: AuthDatabase + 'static>(
 // ----- Generic duplicate response
 
 async fn build_generic_duplicate_response<D: AuthDatabase + 'static>(
-    data: web::Data<AuthrData<D>>,
+    ctx: web::Data<AuthrContext<D>>,
     name: String,
     email: String,
     password: String,
     image: Option<String>,
 ) -> HttpResponse {
-    if let Err(err) = hash_password_async(data.argon.clone(), password).await {
+    if let Err(err) = hash_password_async(ctx.argon().clone(), password).await {
         tracing::error!(
             error = %err,
             "Dummy password hashing failed"

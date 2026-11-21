@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::{
     core::{
-        auth::AuthrData,
+        auth::AuthrContext,
         error::AuthrError::{self},
         oauth::{
             OAuthProvider,
@@ -14,7 +14,7 @@ use crate::{
         types::{Session, Verification},
         utils::{generate_random_token, hash_password_async, verify_password_async},
     },
-    database::store::{AccountQuery, AuthDatabase, UserQuery},
+    database::store::AuthDatabase,
     http::utils::get_session_cookie,
 };
 
@@ -41,7 +41,7 @@ fn default_remember_me() -> bool {
 )]
 pub async fn sign_in_email<D: AuthDatabase + 'static>(
     req: HttpRequest,
-    data: web::Data<AuthrData<D>>,
+    ctx: web::Data<AuthrContext<D>>,
     body: web::Json<SigninEmailRequest>,
 ) -> Result<HttpResponse, AuthrError> {
     let SigninEmailRequest {
@@ -58,19 +58,19 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
         return Err(AuthrError::InvalidEmail);
     }
 
-    if password.len() < data.config.email_and_password.min_password_length
-        || password.len() > data.config.email_and_password.max_password_length
+    if password.len() < ctx.config().email_and_password.min_password_length
+        || password.len() > ctx.config().email_and_password.max_password_length
     {
         tracing::debug!("Email sign-in rejected due to invalid password length");
         return Err(AuthrError::InvalidPassword);
     }
 
     // ----- Find the user
-    let user = match data.database.find_user(UserQuery::Email(&email)).await? {
+    let user = match ctx.store().find_user_by_email(&email).await? {
         Some(user) => user,
         None => {
             // Hash password to prevent timing attacks from revealing valid email addresses.
-            if let Err(err) = hash_password_async(data.argon.clone(), password).await {
+            if let Err(err) = hash_password_async(ctx.argon().clone(), password).await {
                 tracing::error!(
                     error = %err,
                     "Dummy password hashing failed"
@@ -83,17 +83,14 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
     };
 
     // ----- Find the credential account for the user
-    let credential_account = match data
-        .database
-        .find_account(AccountQuery::Provider {
-            provider_id: "credential",
-            account_id: &user.id.to_string(),
-        })
+    let credential_account = match ctx
+        .store()
+        .find_account_by_provider("credential", &user.id.to_string())
         .await?
     {
         Some(account) => account,
         None => {
-            if let Err(err) = hash_password_async(data.argon.clone(), password).await {
+            if let Err(err) = hash_password_async(ctx.argon().clone(), password).await {
                 tracing::error!(
                     error = %err,
                     "Dummy password hashing failed"
@@ -126,8 +123,8 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
         .and_then(|ua| ua.to_str().ok())
         .map(String::from);
 
-    let session = data
-        .database
+    let session = ctx
+        .store()
         .create_session(Session::new(user.id, ip_address, user_agent), remember_me)
         .await?;
 
@@ -177,7 +174,7 @@ fn default_redirect() -> bool {
 )]
 pub async fn sign_in_social<D: AuthDatabase + 'static>(
     req: HttpRequest,
-    data: web::Data<AuthrData<D>>,
+    ctx: web::Data<AuthrContext<D>>,
     body: web::Json<SigninSocialRequest>,
 ) -> Result<HttpResponse, AuthrError> {
     let SigninSocialRequest {
@@ -188,7 +185,7 @@ pub async fn sign_in_social<D: AuthDatabase + 'static>(
     } = body.into_inner();
 
     // ----- Find the provider
-    let Some(provider) = data.config.social_providers.get(&provider) else {
+    let Some(provider) = ctx.config().social_providers.get(&provider) else {
         tracing::warn!("Social sign-in requested with an unsupported provider");
         return Err(AuthrError::ProviderNotFound);
     };
@@ -215,7 +212,7 @@ pub async fn sign_in_social<D: AuthDatabase + 'static>(
     })?;
 
     // ----- Create a verification
-    data.database
+    ctx.store()
         .create_verification(Verification::new(
             format!("oauth:{state}"),
             transaction_value,
@@ -226,8 +223,8 @@ pub async fn sign_in_social<D: AuthDatabase + 'static>(
 
     // ----- Build callback URL
     let redirect_uri = get_provider_callback_url(
-        &data.config.base_url,
-        &data.config.base_path,
+        &ctx.config().base_url,
+        &ctx.config().base_path,
         &req,
         provider.id(),
     )

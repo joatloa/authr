@@ -1,10 +1,7 @@
 use actix_web::{App, HttpServer, web};
 
 use crate::{
-    core::{
-        auth::{AuthrConfig, AuthrData},
-        utils::create_argon,
-    },
+    core::auth::{AuthrConfig, AuthrContext},
     database::store::AuthDatabase,
     http::router,
 };
@@ -36,16 +33,14 @@ async fn run_authr_impl<D: AuthDatabase + 'static>(
 ) -> std::io::Result<()> {
     let addr = config.base_url.socket_addr()?;
 
-    let data = web::Data::new(AuthrData {
-        database,
-        config,
-        argon: create_argon(),
-    });
+    let base_path = config.base_path.clone();
+
+    let data = web::Data::new(AuthrContext::new(database, config));
 
     HttpServer::new(move || {
         App::new()
             .app_data(data.clone())
-            .service(web::scope(&data.config.base_path).configure(router::config::<D>))
+            .service(web::scope(&base_path).configure(router::config::<D>))
     })
     .bind(addr)?
     .run()

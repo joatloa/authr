@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::core::utils::generate_random_token;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct User {
     pub id: Uuid,
     pub name: String,
@@ -28,6 +29,7 @@ impl User {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Account {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -85,6 +87,7 @@ impl Account {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Verification {
     pub id: Uuid,
     pub identifier: String,
@@ -105,6 +108,7 @@ impl Verification {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: Uuid,
     pub user_id: Uuid,

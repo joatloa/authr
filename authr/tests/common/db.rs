@@ -114,12 +114,36 @@ impl AuthDatabase for TestDatabase {
         let session = state.sessions.iter().find(|session| match query {
             SessionQuery::Token(token) => session.token == hash_str(token),
             SessionQuery::UserId(user_id) => session.user_id.to_string() == user_id,
+            _ => unreachable!(),
         });
 
         Ok(session.cloned().map(|mut session| {
             session.token.clear();
             session
         }))
+    }
+    async fn find_sessions(&self, query: SessionQuery<'_>) -> StoreResult<Vec<Session>> {
+        let state = self.state.lock().await;
+
+        let session = state
+            .sessions
+            .iter()
+            .filter(|session| match query {
+                SessionQuery::Token(token) => session.token == hash_str(token),
+                SessionQuery::UserId(user_id) => session.user_id.to_string() == user_id,
+                SessionQuery::UserIdExcept {
+                    user_id,
+                    session_id,
+                } => session.user_id.to_string() == user_id && session.id.to_string() != session_id,
+            })
+            .cloned();
+
+        Ok(session
+            .map(|mut session| {
+                session.token.clear();
+                session
+            })
+            .collect())
     }
     async fn update_session(&self, mut session: Session) -> StoreResult<Option<Session>> {
         let mut state = self.state.lock().await;
@@ -150,6 +174,10 @@ impl AuthDatabase for TestDatabase {
         state.sessions.retain(|session| !match query {
             SessionQuery::Token(token) => session.token == hash_str(token),
             SessionQuery::UserId(user_id) => session.user_id.to_string() == user_id,
+            SessionQuery::UserIdExcept {
+                user_id,
+                session_id,
+            } => session.user_id.to_string() == user_id && session.id.to_string() != session_id,
         });
 
         Ok(state.sessions.len() < previous_len)

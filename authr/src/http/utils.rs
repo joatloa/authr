@@ -21,3 +21,15 @@ pub fn get_session_cookie(session: &Session) -> Cookie<'static> {
 
     cookie
 }
+
+pub fn get_removal_session_cookie() -> Cookie<'static> {
+    let mut cookie = Cookie::build(SESSION_COOKIE_NAME, "")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Lax)
+        .path("/")
+        .finish();
+
+    cookie.make_removal();
+    cookie
+}
