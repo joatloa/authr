@@ -10,13 +10,13 @@ use crate::{
 
 pub fn config<D: AuthDatabase + 'static>(cfg: &mut ServiceConfig) {
     cfg
-        // ----- Email/Password
+        // -------------------- Email/Password Flow --------------------
         .route("/sign-up", web::post().to(handlers::sign_up::<D>))
         .route(
             "/sign-in/email",
             web::post().to(handlers::sign_in_email::<D>),
         )
-        // ----- OAuth2
+        // -------------------- OAuth2 Flow --------------------
         .route(
             "/sign-in/social",
             web::post().to(handlers::sign_in_social::<D>),
@@ -25,14 +25,31 @@ pub fn config<D: AuthDatabase + 'static>(cfg: &mut ServiceConfig) {
             "/callback/{provider}",
             web::get().to(handlers::callback::<D>),
         )
-        // ----- Other
+        // -------------------- Sign Out --------------------
         .route("/sign-out", web::post().to(handlers::sign_out::<D>))
-        // ----- Session
+        // -------------------- Password --------------------
+        .route(
+            "/request-password-reset",
+            web::post().to(handlers::request_password_reset::<D>),
+        )
+        .route(
+            "/reset-password/{token}",
+            web::get().to(handlers::reset_password_callback::<D>),
+        )
+        .route(
+            "/reset-password",
+            web::post().to(handlers::reset_password::<D>),
+        )
+        // Keep this public route ahead of the empty-prefix protected scope.
         .route("/get-session", web::get().to(handlers::get_session::<D>))
         // Protected
         .service(
             web::scope("")
                 .wrap(from_fn(require_session::<D, _>))
+                .route(
+                    "/verify-password",
+                    web::post().to(handlers::verify_password::<D>),
+                )
                 .route(
                     "/list-sessions",
                     web::get().to(handlers::list_sessions::<D>),

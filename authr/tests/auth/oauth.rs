@@ -39,6 +39,7 @@ async fn create_oauth_transaction(
     let verification = Verification::new(
         format!("oauth:{state}"),
         serde_json::to_string(&transaction).unwrap(),
+        Utc::now() + Duration::minutes(10),
     );
 
     database
@@ -305,6 +306,7 @@ async fn callback_rejects_expired_state() {
     let mut verification = Verification::new(
         "oauth:expired-state".into(),
         serde_json::to_string(&transaction).unwrap(),
+        Utc::now() + Duration::days(10),
     );
 
     verification.expires_at = Utc::now() - Duration::minutes(1);

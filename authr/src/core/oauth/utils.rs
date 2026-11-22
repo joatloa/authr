@@ -5,33 +5,18 @@ use url::Url;
 
 use crate::core::{auth::BaseUrl, error::AuthrError};
 
+/// Builds the OAuth callback URL for the specified provider.
 pub fn get_provider_callback_url(
     base_url: &BaseUrl,
     base_path: &str,
     req: &HttpRequest,
     provider_id: &str,
 ) -> Result<Url, AuthrError> {
-    let base = match base_url {
-        BaseUrl::Link { host } => host.clone(),
+    // ----- Resolve base URL
+    let connection = req.connection_info();
+    let mut url = base_url.resolve(Some(connection.host()), Some(connection.scheme()))?;
 
-        BaseUrl::List {
-            allowed_hosts,
-            fallback,
-        } => {
-            let connection_info = req.connection_info();
-
-            let host = connection_info.host();
-
-            if !allowed_hosts.iter().any(|allowed| allowed == host) {
-                fallback.clone()
-            } else {
-                format!("{}://{}", connection_info.scheme(), host)
-            }
-        }
-    };
-
-    let mut url = Url::parse(&base).map_err(|_| AuthrError::Internal)?;
-
+    // ----- Append callback path
     url.set_path(&format!(
         "{}/callback/{}",
         base_path.trim_end_matches('/'),

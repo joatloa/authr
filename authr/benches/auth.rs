@@ -2,7 +2,7 @@ mod helpers;
 
 use actix_web::{App, test, web};
 use authr::{
-    core::{auth::AuthrContext, types::Account, utils::hash_password_async},
+    core::{auth::AuthrContext, types::Account},
     database::adapter::DieselDatabase,
     http::router,
 };
@@ -30,9 +30,7 @@ fn auth_benchmarks(c: &mut Criterion) {
     let (users, password) = runtime.block_on(async {
         let password = BENCH_PASSWORD.to_string();
 
-        let password_hash = hash_password_async(context.argon().clone(), password.clone())
-            .await
-            .unwrap();
+        let password_hash = context.hash_password(password.clone()).await.unwrap();
 
         let mut users = Vec::with_capacity(SIGN_IN_USER_COUNT);
 

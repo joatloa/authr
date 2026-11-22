@@ -171,7 +171,6 @@ impl AuthDatabase for DieselDatabase {
         let new_session = NewSession {
             id: &session_data.id.to_string(),
             userId: &session_data.user_id.to_string(),
-            // The token is hashed in [`create_session`] in [`AuthrStore`]
             tokenHash: &session_data.token,
             expiresAt: session_data.expires_at.naive_utc(),
             ipAddress: session_data.ip_address.as_deref(),
@@ -194,7 +193,6 @@ impl AuthDatabase for DieselDatabase {
             .map_err(|_| AuthrError::SessionLookupFailed)?;
 
         let row = match filter {
-            // The token is hashed in [`find_session_by_token`] in [`AuthrStore`]
             SessionFilter::Token(token_hash) => session::table
                 .filter(session::tokenHash.eq(token_hash))
                 .select(SessionRow::as_select())
@@ -283,7 +281,6 @@ impl AuthDatabase for DieselDatabase {
             .map_err(|_| AuthrError::SessionDeletionFailed)?;
 
         let affected = match filter {
-            // The token is hashed in [`delete_session_by_token`] in [`AuthrStore`]
             SessionFilter::Token(token_hash) => {
                 diesel::delete(session::table.filter(session::tokenHash.eq(token_hash)))
                     .execute(&mut conn)

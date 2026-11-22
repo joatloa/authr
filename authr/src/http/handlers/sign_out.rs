@@ -1,12 +1,14 @@
-use actix_web::{HttpRequest, HttpResponse, Responder, http::header, web};
+use actix_web::{HttpRequest, HttpResponse, http::header, web};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    core::{auth::AuthrContext, oauth::OAuthProvider},
+    core::{auth::AuthrContext, error::AuthrError, oauth::OAuthProvider},
     database::store::AuthDatabase,
-    http::utils::{SESSION_COOKIE_NAME, get_removal_session_cookie},
+    http::cookie::{build_removal_session_cookie, extract_session_token},
 };
+
+// -------------------- Sign Out - POST "/sign-up" --------------------
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,17 +35,11 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
     req: HttpRequest,
     ctx: web::Data<AuthrContext<D>>,
     body: web::Json<SignOutRequest>,
-) -> impl Responder {
-    let SignOutRequest {
-        callback_url,
-        disable_redirect,
-        state,
-    } = body.into_inner();
+) -> Result<HttpResponse, AuthrError> {
+    let body = body.into_inner();
 
     // ----- Extract session token
-    let session_token = req
-        .cookie(SESSION_COOKIE_NAME)
-        .map(|cookie| cookie.value().to_string());
+    let session_token = extract_session_token(&req);
 
     if session_token.is_some() {
         tracing::debug!("Session cookie found in sign-out request");
@@ -96,11 +92,6 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
         }
     }
 
-    // ----- Clear session cookie
-    let cookie = get_removal_session_cookie();
-
-    tracing::debug!("Session cookie scheduled for removal");
-
     // ----- Provider logout
     let provider_logout_url = if let Some(session) = current_session {
         tracing::debug!(
@@ -108,24 +99,36 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
             "Attempting provider logout"
         );
 
-        create_provider_logout_url(
-            &req,
+        match create_provider_logout_url(
             &ctx,
+            &req,
             session.user_id,
-            callback_url.as_deref(),
-            state.as_deref(),
+            body.callback_url.as_deref(),
+            body.state.as_deref(),
         )
         .await
+        {
+            Ok(url) => url,
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    "Failed to generate provider logout URL"
+                );
+                None
+            }
+        }
     } else {
         tracing::debug!("Skipping provider logout: no active session");
         None
     };
 
     // ----- Response
+    let cookie = build_removal_session_cookie();
+
     let mut response = HttpResponse::Ok();
 
     if let Some(url) = provider_logout_url {
-        let should_redirect = !disable_redirect;
+        let should_redirect = !body.disable_redirect;
 
         if should_redirect {
             tracing::info!("Redirecting to provider logout");
@@ -134,34 +137,63 @@ pub async fn sign_out<D: AuthDatabase + 'static>(
             tracing::debug!("Returning provider logout URL without redirect");
         }
 
-        return response.cookie(cookie).json(json!({
+        return Ok(response.cookie(cookie).json(json!({
             "success": true,
             "url": url,
             "redirect": should_redirect
-        }));
+        })));
     }
 
     tracing::info!("Local sign-out completed");
 
-    response.cookie(cookie).json(json!({
+    Ok(response.cookie(cookie).json(json!({
         "success": true
-    }))
+    })))
 }
 
-// ----- Provider logout
+// -------------------- Helpers --------------------
 
-#[tracing::instrument(
-    name = "auth.provider_logout",
-    skip_all,
-    fields(user_id = %user_id),
-)]
 async fn create_provider_logout_url<D: AuthDatabase + 'static>(
-    req: &HttpRequest,
     ctx: &web::Data<AuthrContext<D>>,
+    req: &HttpRequest,
     user_id: uuid::Uuid,
     callback_url: Option<&str>,
     state: Option<&str>,
-) -> Option<String> {
+) -> Result<Option<String>, AuthrError> {
+    let config = ctx.config();
+
+    // ----- Resolve post-logout redirect URI
+    let post_logout_redirect_uri = match callback_url {
+        Some(callback_url) => {
+            let connection = req.connection_info();
+
+            let base_url = config
+                .base_url
+                .resolve(Some(connection.host()), Some(connection.scheme()))?;
+
+            tracing::debug!(%base_url, "Resolved base URL for provider logout");
+
+            let url = base_url
+                .join(callback_url)
+                .map_err(|_| AuthrError::Internal)?;
+
+            if !config.base_url.is_allowed(url.as_str()) {
+                return Err(AuthrError::InvalidCallbackUrl);
+            }
+
+            tracing::debug!(
+                %url,
+                "Resolved post-logout redirect URI"
+            );
+
+            Some(url)
+        }
+        None => {
+            tracing::debug!("No post-logout callback URL provided");
+            None
+        }
+    };
+
     // ----- Find linked accounts
     let accounts = match ctx
         .store()
@@ -177,84 +209,32 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
                 error = %error,
                 "Failed to find user accounts"
             );
-            return None;
+            return Err(error);
         }
     };
 
     // ----- Filter supported providers
     let mut accounts: Vec<_> = accounts
         .into_iter()
-        .filter(|account| {
-            ctx.config()
-                .social_providers
-                .get(&account.provider_id)
-                .is_some_and(|provider| provider.supports_end_session())
+        .filter_map(|account| {
+            let provider = config.social_providers.get(&account.provider_id)?;
+
+            provider
+                .supports_end_session()
+                .then_some((account, provider))
         })
         .collect();
 
-    tracing::debug!(
-        supported_account_count = accounts.len(),
-        "Filtered accounts supporting provider logout"
-    );
-
     // ----- Sort by most recently updated
-    accounts.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-
-    // ----- Resolve post-logout redirect URI
-    let post_logout_redirect_uri = match callback_url {
-        Some(callback_url) => {
-            let base_url = match ctx.config().base_url.resolve(req) {
-                Ok(url) => {
-                    tracing::debug!(%url, "Resolved base URL for provider logout");
-                    url
-                }
-                Err(error) => {
-                    tracing::error!(
-                        error = %error,
-                        "Failed to resolve base URL"
-                    );
-                    return None;
-                }
-            };
-
-            match base_url.join(callback_url) {
-                Ok(url) => {
-                    tracing::debug!(
-                        %url,
-                        "Resolved post-logout redirect URI"
-                    );
-                    Some(url)
-                }
-                Err(error) => {
-                    tracing::error!(
-                        error = %error,
-                        "Invalid logout callback URL"
-                    );
-                    return None;
-                }
-            }
-        }
-        None => {
-            tracing::debug!("No post-logout callback URL provided");
-            None
-        }
-    };
+    accounts.sort_by(|a, b| b.0.updated_at.cmp(&a.0.updated_at));
 
     // ----- Generate provider logout URL
     let mut seen_provider_ids = std::collections::HashSet::new();
 
-    for account in accounts {
+    for (account, provider) in accounts {
         if !seen_provider_ids.insert(account.provider_id.clone()) {
             continue;
         }
-
-        let Some(provider) = ctx.config().social_providers.get(&account.provider_id) else {
-            tracing::debug!(
-                provider = %account.provider_id,
-                "Provider configuration not found"
-            );
-            continue;
-        };
 
         tracing::debug!(
             provider = %account.provider_id,
@@ -274,7 +254,7 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
                     provider = %account.provider_id,
                     "Provider logout URL generated successfully"
                 );
-                return Some(url.to_string());
+                return Ok(Some(url.to_string()));
             }
             Ok(None) => {
                 tracing::debug!(
@@ -294,5 +274,5 @@ async fn create_provider_logout_url<D: AuthDatabase + 'static>(
 
     tracing::debug!("No provider logout URL could be generated");
 
-    None
+    Ok(None)
 }

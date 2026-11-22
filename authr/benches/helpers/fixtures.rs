@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 use authr::core::types::{Account, Session, User, Verification};
+use chrono::{Duration, Utc};
 use uuid::Uuid;
 
 pub fn user() -> User {
@@ -28,5 +29,6 @@ pub fn verification() -> Verification {
     Verification::new(
         format!("benchmark-{}", Uuid::new_v4()),
         "benchmark-verification-value".into(),
+        Utc::now() + Duration::minutes(10),
     )
 }

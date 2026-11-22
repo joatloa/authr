@@ -14,8 +14,10 @@ use crate::{
         types::{Account, Session, User},
     },
     database::store::AuthDatabase,
-    http::utils::get_session_cookie,
+    http::{cookie::build_session_cookie, handlers::sign_in::VERIFICATION_PREFIX_OAUTH},
 };
+
+// -------------------- Oauth Callback - GET "/callback/{provider}" --------------------
 
 #[derive(Debug, Deserialize)]
 pub struct OAuthCallbackQuery {
@@ -43,19 +45,18 @@ pub async fn callback<D: AuthDatabase + 'static>(
 ) -> Result<HttpResponse, AuthrError> {
     let provider_id = path.into_inner();
 
-    let OAuthCallbackQuery {
-        code,
-        error,
-        error_description,
-        state,
-    } = query.into_inner();
+    let query = query.into_inner();
+
+    let config = ctx.config();
 
     // ----- Create closure to redirect when an error happens
-    let mut error_url = ctx.config().base_url.resolve(&req)?;
-    error_url.set_path(&format!(
-        "{}/error",
-        ctx.config().base_path.trim_end_matches('/')
-    ));
+    let connection = req.connection_info();
+
+    let mut error_url = config
+        .base_url
+        .resolve(Some(connection.host()), Some(connection.scheme()))?;
+
+    error_url.set_path(&format!("{}/error", config.base_path.trim_end_matches('/')));
 
     let redirect_error = |error: &str, error_description: Option<String>| -> HttpResponse {
         let mut url = error_url.clone();
@@ -72,22 +73,22 @@ pub async fn callback<D: AuthDatabase + 'static>(
     };
 
     // ----- Authorization Error
-    if let Some(error) = error {
+    if let Some(error) = query.error {
         tracing::warn!(
             provider = %provider_id,
             "OAuth authorization failed"
         );
 
         tracing::debug!(
-            has_error_description = error_description.is_some(),
+            has_error_description = query.error_description.is_some(),
             "Received OAuth authorization error response"
         );
 
-        return Ok(redirect_error(&error, error_description));
+        return Ok(redirect_error(&error, query.error_description));
     }
 
     // ----- State Validation
-    let Some(state) = state else {
+    let Some(state) = query.state else {
         tracing::warn!(
             provider = %provider_id,
             "OAuth callback received without state"
@@ -97,7 +98,7 @@ pub async fn callback<D: AuthDatabase + 'static>(
     };
 
     // Retrieve and consume the OAuth transaction.
-    let identifier = format!("oauth:{state}");
+    let identifier = format!("{VERIFICATION_PREFIX_OAUTH}{state}");
 
     let verification = match ctx.store().consume_verification(&identifier).await {
         Ok(Some(verification)) => verification,
@@ -155,7 +156,7 @@ pub async fn callback<D: AuthDatabase + 'static>(
     }
 
     // ----- Provider Resolution
-    let Some(provider) = ctx.config().social_providers.get(&provider_id) else {
+    let Some(provider) = config.social_providers.get(&provider_id) else {
         tracing::warn!(
             provider = %provider_id,
             "OAuth provider is not configured"
@@ -164,7 +165,7 @@ pub async fn callback<D: AuthDatabase + 'static>(
         return Ok(redirect_error("provider_not_found", None));
     };
 
-    let Some(code) = code else {
+    let Some(code) = query.code else {
         tracing::warn!(
             provider = %provider_id,
             "OAuth callback received without authorization code"
@@ -174,22 +175,18 @@ pub async fn callback<D: AuthDatabase + 'static>(
     };
 
     // ----- Build Callback URL
-    let redirect_uri = match get_provider_callback_url(
-        &ctx.config().base_url,
-        &ctx.config().base_path,
-        &req,
-        provider.id(),
-    ) {
-        Ok(url) => url,
-        Err(error) => {
-            tracing::error!(
-                error = %error,
-                "Failed to create provider callback URL"
-            );
+    let redirect_uri =
+        match get_provider_callback_url(&config.base_url, &config.base_path, &req, provider.id()) {
+            Ok(url) => url,
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    "Failed to create provider callback URL"
+                );
 
-            return Ok(redirect_error("invalid_callback_url", None));
-        }
-    };
+                return Ok(redirect_error("invalid_callback_url", None));
+            }
+        };
 
     // ----- Token Exchange
     let tokens = match provider
@@ -253,6 +250,16 @@ pub async fn callback<D: AuthDatabase + 'static>(
         }
     };
 
+    // ---- Callback URL
+    let Some(callback_url) = transaction.callback_url else {
+        tracing::warn!(
+            provider = %provider_id,
+            "OAuth transaction does not contain an application callback URL"
+        );
+
+        return Ok(redirect_error("callback_url_not_found", None));
+    };
+
     // ----- Session Creation
     let ip_address = req.peer_addr().map(|address| address.ip().to_string());
     let user_agent = req
@@ -283,16 +290,7 @@ pub async fn callback<D: AuthDatabase + 'static>(
     );
 
     // ----- Application Redirect
-    let Some(callback_url) = transaction.callback_url else {
-        tracing::warn!(
-            provider = %provider_id,
-            "OAuth transaction does not contain an application callback URL"
-        );
-
-        return Ok(redirect_error("callback_url_not_found", None));
-    };
-
-    let cookie = get_session_cookie(&session);
+    let cookie = build_session_cookie(&session);
 
     tracing::debug!(
         provider = %provider_id,
@@ -305,12 +303,8 @@ pub async fn callback<D: AuthDatabase + 'static>(
         .finish())
 }
 
-#[tracing::instrument(
-    name = "auth.resolve_oauth_user",
-    skip_all,
-    fields(provider = %provider_id),
-    err
-)]
+// -------------------- Helpers --------------------
+
 async fn resolve_oauth_user<D: AuthDatabase + 'static>(
     ctx: &AuthrContext<D>,
     provider_id: &str,
@@ -371,6 +365,10 @@ async fn resolve_oauth_user<D: AuthDatabase + 'static>(
             user
         }
     };
+
+    if !provider_user.email_verified {
+        return Err(AuthrError::InvalidEmail);
+    }
 
     // ----- Account Linking
     ctx.store()

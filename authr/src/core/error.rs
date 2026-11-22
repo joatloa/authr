@@ -9,6 +9,14 @@ pub enum AuthrError {
     InvalidName,
     #[error("Invalid password")]
     InvalidPassword,
+    #[error("Invalid password reset token")]
+    InvalidResetToken,
+    #[error("Invalid callback URL")]
+    InvalidCallbackUrl,
+    #[error("Password reset is not enabled")]
+    PasswordResetDisabled,
+    #[error("Failed to deliver password reset email")]
+    PasswordResetDeliveryFailed,
 
     // -------------------- Authentication --------------------
     #[error("Invalid credentials")]
@@ -19,6 +27,7 @@ pub enum AuthrError {
     UserNotFound,
 
     // -------------------- Database --------------------
+
     // Users
     #[error("Failed to create user")]
     UserCreationFailed,
@@ -28,6 +37,7 @@ pub enum AuthrError {
     UserUpdateFailed,
     #[error("Failed to delete user")]
     UserDeletionFailed,
+
     // Accounts
     #[error("Failed to create account")]
     AccountCreationFailed,
@@ -37,6 +47,7 @@ pub enum AuthrError {
     AccountUpdateFailed,
     #[error("Failed to delete account")]
     AccountDeletionFailed,
+
     // Sessions
     #[error("Failed to create session")]
     SessionCreationFailed,
@@ -46,6 +57,7 @@ pub enum AuthrError {
     SessionUpdateFailed,
     #[error("Failed to delete session")]
     SessionDeletionFailed,
+
     // Verification
     #[error("Failed to create verification")]
     VerificationCreationFailed,

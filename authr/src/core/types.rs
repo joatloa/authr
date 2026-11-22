@@ -1,8 +1,10 @@
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::core::utils::generate_random_token;
+
+// -------------------- User -------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +17,7 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
 impl User {
     /// Creates a user with a new UUID and default timestamps.
     pub fn new(name: String, email: String, email_verified: bool, image: Option<String>) -> Self {
@@ -28,6 +31,8 @@ impl User {
         }
     }
 }
+
+// -------------------- Account -------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +60,7 @@ pub struct Account {
     pub updated_at: DateTime<Utc>,
 }
 impl Account {
+    /// Creates a verification (`created_at` and `updated_at` are defaulted)
     pub fn new_credential(user_id: Uuid, password_hash: String) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -65,6 +71,7 @@ impl Account {
             ..Default::default()
         }
     }
+    /// Creates a verification (`created_at` and `updated_at` are defaulted)
     pub fn new_social(
         user_id: Uuid,
         provider_id: String,
@@ -92,6 +99,8 @@ impl Account {
     }
 }
 
+// -------------------- Verification -------------------------
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Verification {
@@ -104,17 +113,19 @@ pub struct Verification {
     pub updated_at: DateTime<Utc>,
 }
 impl Verification {
-    /// Creates a verification that expires after ten minutes.
-    pub fn new(identifier: String, value: String) -> Self {
+    /// Creates a verification (`created_at` and `updated_at` are defaulted)
+    pub fn new(identifier: String, value: String, expires_at: DateTime<Utc>) -> Self {
         Verification {
             id: Uuid::new_v4(),
             identifier,
             value,
-            expires_at: Utc::now() + Duration::minutes(10),
+            expires_at,
             ..Default::default()
         }
     }
 }
+
+// -------------------- Session -------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -130,7 +141,7 @@ pub struct Session {
     pub updated_at: DateTime<Utc>,
 }
 impl Session {
-    /// Creates a session with a new UUID and random raw token.
+    /// Creates a session with a new UUID and random raw token. (`created_at`, `updated_at` and `expires_at` are defaulted)
     pub fn new(user_id: Uuid, ip_address: Option<String>, user_agent: Option<String>) -> Self {
         Self {
             id: Uuid::new_v4(),

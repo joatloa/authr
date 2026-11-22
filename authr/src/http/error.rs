@@ -4,9 +4,12 @@ use actix_web::{HttpResponse, ResponseError, http::StatusCode};
 impl ResponseError for AuthrError {
     fn status_code(&self) -> StatusCode {
         match self {
-            Self::InvalidEmail | Self::InvalidName | Self::InvalidPassword => {
-                StatusCode::BAD_REQUEST
-            }
+            Self::InvalidEmail
+            | Self::InvalidName
+            | Self::InvalidPassword
+            | Self::InvalidResetToken
+            | Self::InvalidCallbackUrl
+            | Self::PasswordResetDisabled => StatusCode::BAD_REQUEST,
             Self::InvalidCredentials | Self::UserNotFound => StatusCode::UNAUTHORIZED,
             Self::UserAlreadyExists => StatusCode::CONFLICT,
             Self::ProviderNotFound => StatusCode::NOT_FOUND,

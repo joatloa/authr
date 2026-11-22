@@ -17,7 +17,6 @@ pub enum UserFilter<'a> {
 }
 
 pub enum SessionFilter<'a> {
-    /// Match a session using its raw token.
     Token(&'a str),
     UserId(&'a str),
     UserIdExcept {

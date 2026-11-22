@@ -7,28 +7,24 @@ use crate::{
     core::auth::AuthrContext,
     database::store::AuthDatabase,
     http::{
+        cookie::{build_removal_session_cookie, extract_session_token},
         middleware::session::{AuthenticatedSession, resolve_session},
-        utils::{SESSION_COOKIE_NAME, get_removal_session_cookie},
     },
 };
 
-// -------------------- Get Session --------------------
+// -------------------- Get Session - GET "/get-session" --------------------
 
 #[tracing::instrument(name = "auth.get_session", skip_all)]
 pub async fn get_session<D: AuthDatabase + 'static>(
     req: HttpRequest,
     ctx: web::Data<AuthrContext<D>>,
 ) -> impl Responder {
-    // ----- Extract session token
-    let Some(token) = req
-        .cookie(SESSION_COOKIE_NAME)
-        .map(|cookie| cookie.value().to_string())
-    else {
+    let Some(session_token) = extract_session_token(&req) else {
         return HttpResponse::Ok().json(Option::<serde_json::Value>::None);
     };
 
     // ----- Resolve session
-    match resolve_session(&token, &ctx).await {
+    match resolve_session(&ctx, &session_token).await {
         Ok(Some(authenticated)) => {
             tracing::debug!(
                 session_id = %authenticated.session.id,
@@ -59,13 +55,15 @@ pub async fn get_session<D: AuthDatabase + 'static>(
     }
 }
 
-// -------------------- List Session --------------------
+// -------------------- List Session - GET "/list-sessions" --------------------
+
 #[tracing::instrument(name = "auth.list_sessions", skip_all)]
 pub async fn list_sessions<D: AuthDatabase + 'static>(
     req: HttpRequest,
     ctx: web::Data<AuthrContext<D>>,
 ) -> impl Responder {
-    let Some(authenticated) = req.extensions().get::<AuthenticatedSession>().cloned() else {
+    let extensions = req.extensions();
+    let Some(authenticated) = extensions.get::<AuthenticatedSession>() else {
         return HttpResponse::Unauthorized().finish();
     };
 
@@ -102,7 +100,8 @@ pub async fn list_sessions<D: AuthDatabase + 'static>(
     }
 }
 
-// -------------------- Revoke Session --------------------
+// -------------------- Revoke Session - POST "/revoke-session" --------------------
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RevokeSessionRequest {
@@ -119,20 +118,21 @@ pub async fn revoke_session<D: AuthDatabase + 'static>(
     ctx: web::Data<AuthrContext<D>>,
     body: web::Json<RevokeSessionRequest>,
 ) -> impl Responder {
-    let Some(authenticated) = req.extensions().get::<AuthenticatedSession>().cloned() else {
+    let extensions = req.extensions();
+    let Some(authenticated) = extensions.get::<AuthenticatedSession>() else {
         return HttpResponse::Unauthorized().finish();
     };
 
-    let token = body.token.trim();
+    let session_token = body.token.trim();
 
-    if token.is_empty() {
+    if session_token.is_empty() {
         return HttpResponse::BadRequest().json(json!({
             "message": "Session token is required"
         }));
     }
 
     // ----- Find target session
-    let session = match ctx.store().find_session_by_token(token).await {
+    let session = match ctx.store().find_session_by_token(session_token).await {
         Ok(Some(session)) => session,
         Ok(None) => {
             return HttpResponse::NotFound().json(json!({
@@ -157,7 +157,7 @@ pub async fn revoke_session<D: AuthDatabase + 'static>(
     }
 
     // ----- Revoke session
-    match ctx.store().delete_session_by_token(token).await {
+    match ctx.store().delete_session_by_token(session_token).await {
         Ok(_) => {
             tracing::info!(
                 session_id = %session.id,
@@ -167,8 +167,8 @@ pub async fn revoke_session<D: AuthDatabase + 'static>(
 
             let mut response = HttpResponse::Ok();
 
-            if token == authenticated.token {
-                response.cookie(get_removal_session_cookie());
+            if session_token == authenticated.token {
+                response.cookie(build_removal_session_cookie());
             }
 
             response.json(json!({
@@ -186,13 +186,15 @@ pub async fn revoke_session<D: AuthDatabase + 'static>(
     }
 }
 
-// -------------------- Revoke All Session --------------------
+// -------------------- Revoke All Sessions - POST "/revoke-sessions" --------------------
+
 #[tracing::instrument(name = "auth.revoke_sessions", skip_all)]
 pub async fn revoke_sessions<D: AuthDatabase + 'static>(
     req: HttpRequest,
     ctx: web::Data<AuthrContext<D>>,
 ) -> impl Responder {
-    let Some(authenticated) = req.extensions().get::<AuthenticatedSession>().cloned() else {
+    let extensions = req.extensions();
+    let Some(authenticated) = extensions.get::<AuthenticatedSession>() else {
         return HttpResponse::Unauthorized().finish();
     };
 
@@ -207,7 +209,7 @@ pub async fn revoke_sessions<D: AuthDatabase + 'static>(
             );
 
             HttpResponse::Ok()
-                .cookie(get_removal_session_cookie())
+                .cookie(build_removal_session_cookie())
                 .json(json!({
                     "success": true
                 }))
@@ -223,13 +225,15 @@ pub async fn revoke_sessions<D: AuthDatabase + 'static>(
     }
 }
 
-// -------------------- Revoke Other Session --------------------
+// -------------------- Revoke Other Sessions - POST "/revoke-other-sessions" --------------------
+
 #[tracing::instrument(name = "auth.revoke_other_sessions", skip_all)]
 pub async fn revoke_other_sessions<D: AuthDatabase + 'static>(
     req: HttpRequest,
     ctx: web::Data<AuthrContext<D>>,
 ) -> impl Responder {
-    let Some(authenticated) = req.extensions().get::<AuthenticatedSession>().cloned() else {
+    let extensions = req.extensions();
+    let Some(authenticated) = extensions.get::<AuthenticatedSession>() else {
         return HttpResponse::Unauthorized().finish();
     };
 

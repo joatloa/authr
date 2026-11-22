@@ -15,10 +15,11 @@ use crate::{
         types::{Session, User},
     },
     database::store::AuthDatabase,
-    http::utils::SESSION_COOKIE_NAME,
+    http::cookie::extract_session_token,
 };
 
-// ----- Authenticated Session
+// -------------------- Session Middleware --------------------
+
 #[derive(Debug, Clone)]
 pub struct AuthenticatedSession {
     pub session: Session,
@@ -26,38 +27,6 @@ pub struct AuthenticatedSession {
     pub token: String,
 }
 
-// ----- Session Resolution
-pub async fn resolve_session<D: AuthDatabase + 'static>(
-    token: &str,
-    ctx: &AuthrContext<D>,
-) -> Result<Option<AuthenticatedSession>, AuthrError> {
-    // ----- Find session
-    let Some(session) = ctx.store().find_session_by_token(token).await? else {
-        return Ok(None);
-    };
-
-    // ----- Check expiration
-    if session.expires_at <= Utc::now() {
-        ctx.store().delete_session_by_token(token).await?;
-
-        return Ok(None);
-    }
-
-    // ----- Find user
-    let user_id = session.user_id.to_string();
-
-    let Some(user) = ctx.store().find_user_by_id(&user_id).await? else {
-        return Ok(None);
-    };
-
-    Ok(Some(AuthenticatedSession {
-        session,
-        user,
-        token: token.to_string(),
-    }))
-}
-
-// ----- Authentication Middleware
 pub async fn require_session<D, B>(
     req: ServiceRequest,
     next: Next<B>,
@@ -66,8 +35,8 @@ where
     D: AuthDatabase + 'static,
     B: MessageBody + 'static,
 {
-    // ----- Retrieve auth data
-    let Some(data) = req.app_data::<web::Data<AuthrContext<D>>>().cloned() else {
+    // ----- Retrieve ctx
+    let Some(ctx) = req.app_data::<web::Data<AuthrContext<D>>>().cloned() else {
         tracing::error!("AuthrContext is missing from application data");
 
         return Ok(req
@@ -76,10 +45,7 @@ where
     };
 
     // ----- Extract session token
-    let Some(token) = req
-        .cookie(SESSION_COOKIE_NAME)
-        .map(|cookie| cookie.value().to_string())
-    else {
+    let Some(session_token) = extract_session_token(req.request()) else {
         return Ok(req
             .into_response(HttpResponse::Unauthorized().json(serde_json::json!({
                 "message": "Unauthorized"
@@ -88,7 +54,7 @@ where
     };
 
     // ----- Resolve session
-    let authenticated = match resolve_session(&token, &data).await {
+    let authenticated = match resolve_session(&ctx, &session_token).await {
         Ok(Some(authenticated)) => authenticated,
         Ok(None) => {
             return Ok(req
@@ -121,4 +87,38 @@ where
     next.call(req)
         .await
         .map(ServiceResponse::map_into_left_body)
+}
+
+// -------------------- Helpers --------------------
+
+pub async fn resolve_session<D: AuthDatabase + 'static>(
+    ctx: &AuthrContext<D>,
+    session_token: &str,
+) -> Result<Option<AuthenticatedSession>, AuthrError> {
+    // ----- Find session
+    let Some(session) = ctx.store().find_session_by_token(session_token).await? else {
+        return Ok(None);
+    };
+
+    // ----- Check expiration
+    if session.expires_at <= Utc::now() {
+        ctx.store().delete_session_by_token(session_token).await?;
+
+        return Ok(None);
+    }
+
+    // ----- Find user
+    let user_id = session.user_id.to_string();
+
+    let Some(user) = ctx.store().find_user_by_id(&user_id).await? else {
+        ctx.store().delete_session_by_token(session_token).await?;
+
+        return Ok(None);
+    };
+
+    Ok(Some(AuthenticatedSession {
+        session,
+        user,
+        token: session_token.to_string(),
+    }))
 }

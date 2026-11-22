@@ -57,9 +57,9 @@ impl<D: AuthDatabase> AuthrStore<D> {
         };
 
         let mut stored_session = session;
-        let unhashed_token = stored_session.token.clone();
+        let raw_token = stored_session.token.clone();
 
-        stored_session.token = self.secrets.hash_session_token(&unhashed_token);
+        stored_session.token = self.secrets.hash_session_token(&raw_token);
 
         let mut session = self
             .database
@@ -67,14 +67,14 @@ impl<D: AuthDatabase> AuthrStore<D> {
             .await?;
 
         // Return the original token to the caller.
-        session.token = unhashed_token;
+        session.token = raw_token;
 
         Ok(session)
     }
-    pub async fn find_session_by_token(&self, token: &str) -> StoreResult<Option<Session>> {
+    pub async fn find_session_by_token(&self, raw_token: &str) -> StoreResult<Option<Session>> {
         self.database
             .find_session(SessionFilter::Token(
-                &self.secrets.hash_session_token(&token),
+                &self.secrets.hash_session_token(&raw_token),
             ))
             .await
     }
@@ -98,10 +98,10 @@ impl<D: AuthDatabase> AuthrStore<D> {
     pub async fn update_session(&self, session: Session) -> StoreResult<Option<Session>> {
         self.database.update_session(session).await
     }
-    pub async fn delete_session_by_token(&self, token: &str) -> StoreResult<bool> {
+    pub async fn delete_session_by_token(&self, raw_token: &str) -> StoreResult<bool> {
         self.database
             .delete_session(SessionFilter::Token(
-                &self.secrets.hash_session_token(&token),
+                &self.secrets.hash_session_token(&raw_token),
             ))
             .await
     }

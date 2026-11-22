@@ -73,10 +73,6 @@ postgres = ["diesel/postgres"]
 sqlite = ["diesel/sqlite"]
 
 [[bench]]
-name = "crypto"
-harness = false
-
-[[bench]]
 name = "database"
 harness = false
 

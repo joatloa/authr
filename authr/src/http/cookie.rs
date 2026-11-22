@@ -1,11 +1,21 @@
-use actix_web::cookie::{Cookie, SameSite, time::Duration};
+use actix_web::{
+    HttpRequest,
+    cookie::{Cookie, SameSite, time::Duration},
+};
 use chrono::Utc;
 
 use crate::core::types::Session;
 
+/// Name of the cookie used to store the user's session token.
 pub const SESSION_COOKIE_NAME: &str = "authr_session";
 
-pub fn get_session_cookie(session: &Session) -> Cookie<'static> {
+/// Extracts the **raw** session token from the request's session cookie.
+pub fn extract_session_token(request: &HttpRequest) -> Option<String> {
+    request
+        .cookie(SESSION_COOKIE_NAME)
+        .map(|cookie| cookie.value().to_string())
+}
+pub fn build_session_cookie(session: &Session) -> Cookie<'static> {
     let mut cookie = Cookie::build(SESSION_COOKIE_NAME, session.token.clone())
         .http_only(true)
         .secure(true)
@@ -22,7 +32,7 @@ pub fn get_session_cookie(session: &Session) -> Cookie<'static> {
     cookie
 }
 
-pub fn get_removal_session_cookie() -> Cookie<'static> {
+pub fn build_removal_session_cookie() -> Cookie<'static> {
     let mut cookie = Cookie::build(SESSION_COOKIE_NAME, "")
         .http_only(true)
         .secure(true)
@@ -31,5 +41,6 @@ pub fn get_removal_session_cookie() -> Cookie<'static> {
         .finish();
 
     cookie.make_removal();
+
     cookie
 }

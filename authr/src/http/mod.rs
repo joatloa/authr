@@ -12,8 +12,8 @@
 //! middleware for protecting application routes, while [`error`] and
 //! [`utils`] contain shared HTTP error handling and request utilities.
 
+pub mod cookie;
 pub mod error;
 pub mod handlers;
 pub mod middleware;
 pub mod router;
-pub mod utils;

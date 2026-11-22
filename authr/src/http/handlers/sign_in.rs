@@ -1,28 +1,30 @@
 use actix_web::{HttpRequest, HttpResponse, http::header, web};
-use email_address::EmailAddress;
+use chrono::{Duration, Utc};
 use serde::Deserialize;
 
 use crate::{
     core::{
         auth::AuthrContext,
-        error::AuthrError::{self},
+        error::AuthrError,
         oauth::{
             OAuthProvider,
             types::{AuthorizationParams, OAuthTransaction},
             utils::{generate_pkce_challenge, get_provider_callback_url},
         },
         types::{Session, Verification},
-        utils::{generate_random_token, hash_password_async, verify_password_async},
+        utils::generate_random_token,
     },
     database::store::AuthDatabase,
-    http::utils::get_session_cookie,
+    http::cookie::build_session_cookie,
 };
 
-// -------------------- Email and Password --------------------
+pub const VERIFICATION_PREFIX_OAUTH: &str = "oauth:";
+
+// -------------------- Email and Password - POST "/sign-in/email" --------------------
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SigninEmailRequest {
+pub struct SignInEmailRequest {
     email: String,
     password: String,
     #[serde(default = "default_remember_me")]
@@ -42,35 +44,27 @@ fn default_remember_me() -> bool {
 pub async fn sign_in_email<D: AuthDatabase + 'static>(
     req: HttpRequest,
     ctx: web::Data<AuthrContext<D>>,
-    body: web::Json<SigninEmailRequest>,
+    body: web::Json<SignInEmailRequest>,
 ) -> Result<HttpResponse, AuthrError> {
-    let SigninEmailRequest {
-        email,
-        password,
-        remember_me,
-    } = body.into_inner();
-
-    let email = email.trim().to_lowercase();
+    let mut body = body.into_inner();
+    body.email = body.email.trim().to_lowercase();
 
     // ----- Check request body
-    if !EmailAddress::is_valid(&email) {
+    if !ctx.is_email_valid(&body.email) {
         tracing::debug!("Email sign-in rejected due to invalid email");
         return Err(AuthrError::InvalidEmail);
     }
-
-    if password.len() < ctx.config().email_and_password.min_password_length
-        || password.len() > ctx.config().email_and_password.max_password_length
-    {
+    if !ctx.is_password_vaild(&body.password) {
         tracing::debug!("Email sign-in rejected due to invalid password length");
         return Err(AuthrError::InvalidPassword);
     }
 
     // ----- Find the user
-    let user = match ctx.store().find_user_by_email(&email).await? {
+    let user = match ctx.store().find_user_by_email(&body.email).await? {
         Some(user) => user,
         None => {
             // Hash password to prevent timing attacks from revealing valid email addresses.
-            if let Err(err) = hash_password_async(ctx.argon().clone(), password).await {
+            if let Err(err) = ctx.hash_password(body.password).await {
                 tracing::error!(
                     error = %err,
                     "Dummy password hashing failed"
@@ -90,7 +84,7 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
     {
         Some(account) => account,
         None => {
-            if let Err(err) = hash_password_async(ctx.argon().clone(), password).await {
+            if let Err(err) = ctx.hash_password(body.password).await {
                 tracing::error!(
                     error = %err,
                     "Dummy password hashing failed"
@@ -108,7 +102,7 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
         return Err(AuthrError::InvalidCredentials);
     };
 
-    let valid_password = verify_password_async(password, password_hash).await?;
+    let valid_password = ctx.verify_password(body.password, password_hash).await?;
 
     if !valid_password {
         tracing::debug!("Email sign-in failed: password mismatch");
@@ -125,14 +119,17 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
 
     let session = ctx
         .store()
-        .create_session(Session::new(user.id, ip_address, user_agent), remember_me)
+        .create_session(
+            Session::new(user.id, ip_address, user_agent),
+            body.remember_me,
+        )
         .await?;
 
     tracing::info!("User signed in successfully");
 
     // ----- Give Response
     Ok(HttpResponse::Ok()
-        .cookie(get_session_cookie(&session))
+        .cookie(build_session_cookie(&session))
         .json(serde_json::json!({
             "token": session.token,
             "user": {
@@ -145,11 +142,11 @@ pub async fn sign_in_email<D: AuthDatabase + 'static>(
         })))
 }
 
-// -------------------- OAuth2 --------------------
+// -------------------- OAuth2 - POST "/sign-in/social" --------------------
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SigninSocialRequest {
+pub struct SignInSocialRequest {
     provider: String,
     callback_url: Option<String>,
     #[serde(default = "default_redirect")]
@@ -175,17 +172,14 @@ fn default_redirect() -> bool {
 pub async fn sign_in_social<D: AuthDatabase + 'static>(
     req: HttpRequest,
     ctx: web::Data<AuthrContext<D>>,
-    body: web::Json<SigninSocialRequest>,
+    body: web::Json<SignInSocialRequest>,
 ) -> Result<HttpResponse, AuthrError> {
-    let SigninSocialRequest {
-        provider,
-        callback_url,
-        disable_redirect,
-        scopes,
-    } = body.into_inner();
+    let body = body.into_inner();
+
+    let config = ctx.config();
 
     // ----- Find the provider
-    let Some(provider) = ctx.config().social_providers.get(&provider) else {
+    let Some(provider) = config.social_providers.get(&body.provider) else {
         tracing::warn!("Social sign-in requested with an unsupported provider");
         return Err(AuthrError::ProviderNotFound);
     };
@@ -200,7 +194,7 @@ pub async fn sign_in_social<D: AuthDatabase + 'static>(
     let transaction = OAuthTransaction {
         provider_id: provider.id().to_string(),
         code_verifier,
-        callback_url: callback_url.clone(),
+        callback_url: body.callback_url.clone(),
     };
 
     let transaction_value = serde_json::to_string(&transaction).map_err(|err| {
@@ -211,33 +205,30 @@ pub async fn sign_in_social<D: AuthDatabase + 'static>(
         AuthrError::Internal
     })?;
 
+    // ----- Build callback URL
+    let redirect_uri =
+        get_provider_callback_url(&config.base_url, &config.base_path, &req, provider.id())
+            .map_err(|err| {
+                tracing::error!(
+                    error = %err,
+                    "Failed to build OAuth callback URL"
+                );
+                err
+            })?;
+
     // ----- Create a verification
     ctx.store()
         .create_verification(Verification::new(
-            format!("oauth:{state}"),
+            format!("{VERIFICATION_PREFIX_OAUTH}{state}"),
             transaction_value,
+            Utc::now() + Duration::minutes(10),
         ))
         .await?;
 
     tracing::debug!("OAuth transaction stored successfully");
 
-    // ----- Build callback URL
-    let redirect_uri = get_provider_callback_url(
-        &ctx.config().base_url,
-        &ctx.config().base_path,
-        &req,
-        provider.id(),
-    )
-    .map_err(|err| {
-        tracing::error!(
-            error = %err,
-            "Failed to build OAuth callback URL"
-        );
-        err
-    })?;
-
     // ----- Resolve scopes
-    let scopes = scopes.unwrap_or_else(|| provider.scopes().to_vec());
+    let scopes = body.scopes.unwrap_or_else(|| provider.scopes().to_vec());
 
     tracing::debug!(scope_count = scopes.len(), "Resolved OAuth scopes");
 
@@ -266,12 +257,12 @@ pub async fn sign_in_social<D: AuthDatabase + 'static>(
     // ----- Give Response
     let mut response = HttpResponse::Ok();
 
-    if !disable_redirect {
+    if !body.disable_redirect {
         response.append_header(("Location", authorization_url.as_str()));
     }
 
     Ok(response.json(serde_json::json!({
         "url": authorization_url,
-        "redirect": !disable_redirect,
+        "redirect": !body.disable_redirect,
     })))
 }
