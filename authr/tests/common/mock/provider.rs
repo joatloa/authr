@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use reqwest::Url;
 
 use authr::core::{
+    auth::SocialProviders,
     error::AuthrError,
     oauth::{
-        OAuthProvider,
+        OAuthProvider, Provider,
         types::{AuthorizationParams, ProviderUser, TokenExchangeParams, TokenResponse},
     },
 };
@@ -33,6 +36,10 @@ impl MockOAuthProvider {
             fail_user_info: true,
             ..Self::new()
         }
+    }
+
+    pub fn into_social_providers(self) -> SocialProviders {
+        SocialProviders::new(vec![("mock".into(), Provider::Custom(Arc::new(self)))])
     }
 }
 

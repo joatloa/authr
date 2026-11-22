@@ -1,62 +1,14 @@
 use actix_web::{
-    App,
-    http::{Method, StatusCode, header},
-    test, web,
+    http::{StatusCode, header},
+    test,
 };
-use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 
-use authr::{
-    core::{
-        auth::{AuthrContext, SocialProviders},
-        types::{Session, User},
-    },
-    http::router,
+use crate::common::{
+    helpers::{call, expire_session, seed_session, seed_user, test_app},
+    log::init_tracing,
+    mock::TestDatabase,
 };
-use uuid::Uuid;
-
-use crate::common::{TestDatabase, config, init_tracing, test_app};
-
-// -------------------- Helpers --------------------
-async fn create_user(database: &TestDatabase) -> User {
-    database
-        .to_authr_store()
-        .create_user(User::new(
-            "Test User".to_string(),
-            "test@example.com".to_string(),
-            false,
-            None,
-        ))
-        .await
-        .unwrap()
-}
-
-pub async fn create_session(database: &TestDatabase, user_id: Uuid) -> Session {
-    database
-        .to_authr_store()
-        .create_session(Session::new(user_id, None, None), false)
-        .await
-        .unwrap()
-}
-
-async fn create_expired_session(database: &TestDatabase, user_id: uuid::Uuid) -> Session {
-    let mut session = create_session(database, user_id).await;
-    session.expires_at = Utc::now() - Duration::seconds(60);
-
-    database
-        .to_authr_store()
-        .update_session(session.clone())
-        .await
-        .unwrap()
-        .unwrap()
-}
-
-fn authenticated_request(method: Method, uri: &str, token: &str) -> test::TestRequest {
-    test::TestRequest::default()
-        .method(method)
-        .uri(uri)
-        .insert_header((header::COOKIE, format!("authr_session={token}")))
-}
 
 // -------------------- Get Session --------------------
 
@@ -67,14 +19,17 @@ async fn get_session_returns_current_session_and_user() {
 
     let database = TestDatabase::default();
 
-    let user = create_user(&database).await;
-    let session = create_session(&database, user.id).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
+    let session = seed_session(&database, user.id).await;
 
     let app = test_app!(database);
 
-    let request =
-        authenticated_request(Method::GET, "/api/auth/get-session", &session.token).to_request();
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        GET,
+        "/api/auth/get-session",
+        headers = [(header::COOKIE, format!("authr_session={}", session.token))]
+    );
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -99,10 +54,7 @@ async fn get_session_returns_null_without_cookie() {
     let database = TestDatabase::default();
     let app = test_app!(database);
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/get-session")
-        .to_request();
-    let response = test::call_service(&app, request).await;
+    let response = call!(app, GET, "/api/auth/get-session");
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -118,15 +70,19 @@ async fn get_session_returns_null_and_deletes_expired_session() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let user = create_user(&database).await;
-    let session = create_expired_session(&database, user.id).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
+    let session = expire_session(&database, seed_session(&database, user.id).await).await;
     let token = session.token.clone();
 
     let app = test_app!(database);
     let store = database.to_authr_store();
 
-    let request = authenticated_request(Method::GET, "/api/auth/get-session", &token).to_request();
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        GET,
+        "/api/auth/get-session",
+        headers = [(header::COOKIE, format!("authr_session={token}"))]
+    );
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -149,19 +105,22 @@ async fn list_sessions_returns_all_active_user_sessions() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let user = create_user(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
 
-    let first = create_session(&database, user.id).await;
-    let second = create_session(&database, user.id).await;
-    let third = create_session(&database, user.id).await;
+    let first = seed_session(&database, user.id).await;
+    let second = seed_session(&database, user.id).await;
+    let third = seed_session(&database, user.id).await;
 
-    let expired = create_expired_session(&database, user.id).await;
+    let expired = expire_session(&database, seed_session(&database, user.id).await).await;
 
     let app = test_app!(database);
 
-    let request =
-        authenticated_request(Method::GET, "/api/auth/list-sessions", &first.token).to_request();
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        GET,
+        "/api/auth/list-sessions",
+        headers = [(header::COOKIE, format!("authr_session={}", first.token))]
+    );
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -189,10 +148,7 @@ async fn list_sessions_rejects_unauthenticated_request() {
     let database = TestDatabase::default();
     let app = test_app!(database);
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/list-sessions")
-        .to_request();
-    let response = test::call_service(&app, request).await;
+    let response = call!(app, GET, "/api/auth/list-sessions");
 
     // ----- Rejects
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -206,22 +162,24 @@ async fn revoke_session_deletes_target_session() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let user = create_user(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
 
-    let current = create_session(&database, user.id).await;
-    let target = create_session(&database, user.id).await;
+    let current = seed_session(&database, user.id).await;
+    let target = seed_session(&database, user.id).await;
     let target_token = target.token.clone();
 
     let app = test_app!(database);
     let store = database.to_authr_store();
 
-    let req_body = json!({
-        "token": target_token
-    });
-    let request = authenticated_request(Method::POST, "/api/auth/revoke-session", &current.token)
-        .set_json(req_body)
-        .to_request();
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/revoke-session",
+        json = json!({
+            "token": target_token
+        }),
+        headers = [(header::COOKIE, format!("authr_session={}", current.token))]
+    );
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -248,32 +206,24 @@ async fn revoke_session_rejects_another_users_session() {
 
     let database = TestDatabase::default();
 
-    let first_user = create_user(&database).await;
-    let store = database.to_authr_store();
+    let first_user = seed_user(&database, "Test User", "test@example.com").await;
+    let second_user = seed_user(&database, "Another User", "another@example.com").await;
 
-    let second_user = store
-        .create_user(User::new(
-            "Another User".to_string(),
-            "another@example.com".to_string(),
-            false,
-            None,
-        ))
-        .await
-        .unwrap();
-
-    let current = create_session(&database, first_user.id).await;
-    let target = create_session(&database, second_user.id).await;
+    let current = seed_session(&database, first_user.id).await;
+    let target = seed_session(&database, second_user.id).await;
 
     let app = test_app!(database);
     let store = database.to_authr_store();
 
-    let req_body = json!({
-        "token": target.token
-    });
-    let request = authenticated_request(Method::POST, "/api/auth/revoke-session", &current.token)
-        .set_json(req_body)
-        .to_request();
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/revoke-session",
+        json = json!({
+            "token": target.token
+        }),
+        headers = [(header::COOKIE, format!("authr_session={}", current.token))]
+    );
 
     // ----- Rejects
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -290,18 +240,20 @@ async fn revoke_session_returns_not_found_for_unknown_token() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let user = create_user(&database).await;
-    let current = create_session(&database, user.id).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
+    let current = seed_session(&database, user.id).await;
 
     let app = test_app!(database);
 
-    let req_body = json!({
-        "token": "unknown-session-token"
-    });
-    let request = authenticated_request(Method::POST, "/api/auth/revoke-session", &current.token)
-        .set_json(req_body)
-        .to_request();
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/revoke-session",
+        json = json!({
+            "token": "unknown-session-token"
+        }),
+        headers = [(header::COOKIE, format!("authr_session={}", current.token))]
+    );
 
     // ----- Rejects
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -315,11 +267,11 @@ async fn revoke_sessions_deletes_all_user_sessions_and_clears_cookie() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let user = create_user(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
 
-    let first = create_session(&database, user.id).await;
-    let second = create_session(&database, user.id).await;
-    let third = create_session(&database, user.id).await;
+    let first = seed_session(&database, user.id).await;
+    let second = seed_session(&database, user.id).await;
+    let third = seed_session(&database, user.id).await;
 
     let first_token = first.token.clone();
     let second_token = second.token.clone();
@@ -328,9 +280,12 @@ async fn revoke_sessions_deletes_all_user_sessions_and_clears_cookie() {
     let app = test_app!(database);
     let store = database.to_authr_store();
 
-    let request =
-        authenticated_request(Method::POST, "/api/auth/revoke-sessions", &first.token).to_request();
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/revoke-sessions",
+        headers = [(header::COOKIE, format!("authr_session={}", first.token))]
+    );
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -340,8 +295,7 @@ async fn revoke_sessions_deletes_all_user_sessions_and_clears_cookie() {
         .get(header::SET_COOKIE)
         .unwrap()
         .to_str()
-        .unwrap()
-        .to_string();
+        .unwrap();
 
     assert!(set_cookie.contains("authr_session="));
     assert!(set_cookie.contains("Max-Age=0"));
@@ -367,10 +321,7 @@ async fn revoke_sessions_rejects_unauthenticated_request() {
     let database = TestDatabase::default();
     let app = test_app!(database);
 
-    let request = test::TestRequest::post()
-        .uri("/api/auth/revoke-sessions")
-        .to_request();
-    let response = test::call_service(&app, request).await;
+    let response = call!(app, POST, "/api/auth/revoke-sessions");
 
     // ----- Rejects
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -384,11 +335,11 @@ async fn revoke_other_sessions_preserves_current_session() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let user = create_user(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
 
-    let current = create_session(&database, user.id).await;
-    let second = create_session(&database, user.id).await;
-    let third = create_session(&database, user.id).await;
+    let current = seed_session(&database, user.id).await;
+    let second = seed_session(&database, user.id).await;
+    let third = seed_session(&database, user.id).await;
 
     let second_token = second.token.clone();
     let third_token = third.token.clone();
@@ -396,13 +347,12 @@ async fn revoke_other_sessions_preserves_current_session() {
     let app = test_app!(database);
     let store = database.to_authr_store();
 
-    let request = authenticated_request(
-        Method::POST,
+    let response = call!(
+        app,
+        POST,
         "/api/auth/revoke-other-sessions",
-        &current.token,
-    )
-    .to_request();
-    let response = test::call_service(&app, request).await;
+        headers = [(header::COOKIE, format!("authr_session={}", current.token))]
+    );
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -431,33 +381,23 @@ async fn revoke_other_sessions_does_not_revoke_another_users_sessions() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let user = create_user(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
 
-    let other_user = database
-        .to_authr_store()
-        .create_user(User::new(
-            "Another User".to_string(),
-            "another@example.com".to_string(),
-            false,
-            None,
-        ))
-        .await
-        .unwrap();
+    let other_user = seed_user(&database, "Another User", "another@example.com").await;
 
-    let current = create_session(&database, user.id).await;
-    let other_user_session = create_session(&database, other_user.id).await;
+    let current = seed_session(&database, user.id).await;
+    let other_user_session = seed_session(&database, other_user.id).await;
 
     let app = test_app!(database);
     let store = database.to_authr_store();
 
     // ----- Send Request
-    let request = authenticated_request(
-        Method::POST,
+    let response = call!(
+        app,
+        POST,
         "/api/auth/revoke-other-sessions",
-        &current.token,
-    )
-    .to_request();
-    let response = test::call_service(&app, request).await;
+        headers = [(header::COOKIE, format!("authr_session={}", current.token))]
+    );
 
     assert_eq!(response.status(), StatusCode::OK);
 

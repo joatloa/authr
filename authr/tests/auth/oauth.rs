@@ -1,63 +1,26 @@
-use std::sync::Arc;
-
-use actix_web::{App, http::header, test, web};
+use actix_web::{http::header, test};
 use chrono::{Duration, Utc};
 use reqwest::Url;
 use serde_json::{Value, json};
 
-use authr::{
-    core::{
-        auth::{AuthrContext, SocialProviders},
-        oauth::{Provider, types::OAuthTransaction},
-        types::Verification,
-    },
-    http::router,
-};
+use authr::core::{oauth::types::OAuthTransaction, types::Verification};
 
 use crate::common::{
-    MockOAuthProvider, TestDatabase, config, sign_in_social, sign_up_user, test_app,
+    helpers::{call, config, seed_oauth_transaction, test_app},
+    log::init_tracing,
+    mock::{MockOAuthProvider, TestDatabase},
 };
-
-// -------------------- Helpers --------------------
-
-fn mock_providers(provider: MockOAuthProvider) -> SocialProviders {
-    SocialProviders::new(vec![("mock".into(), Provider::Custom(Arc::new(provider)))])
-}
-
-async fn create_oauth_transaction(
-    database: &TestDatabase,
-    state: &str,
-    provider_id: &str,
-    callback_url: Option<String>,
-) {
-    let transaction = OAuthTransaction {
-        provider_id: provider_id.into(),
-        code_verifier: "mock-code-verifier".into(),
-        callback_url,
-    };
-
-    let verification = Verification::new(
-        format!("oauth:{state}"),
-        serde_json::to_string(&transaction).unwrap(),
-        Utc::now() + Duration::minutes(10),
-    );
-
-    database
-        .to_authr_store()
-        .create_verification(verification)
-        .await
-        .unwrap();
-}
 
 // -------------------- Social Sign-in --------------------
 
 #[actix_web::test]
 async fn sign_in_social_generates_authorization_url() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::new()))
+        config(true, MockOAuthProvider::new().into_social_providers())
     );
     let store = database.to_authr_store();
 
@@ -65,7 +28,7 @@ async fn sign_in_social_generates_authorization_url() {
         "provider": "mock"
     });
 
-    let response = sign_in_social!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-in/social", json = req_body);
 
     // ----- Check Response
     assert_eq!(response.status(), 200);
@@ -102,10 +65,11 @@ async fn sign_in_social_generates_authorization_url() {
 #[actix_web::test]
 async fn sign_in_social_uses_custom_scopes() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::new()))
+        config(true, MockOAuthProvider::new().into_social_providers())
     );
 
     let req_body = json!({
@@ -113,7 +77,7 @@ async fn sign_in_social_uses_custom_scopes() {
         "scopes": ["email", "profile"]
     });
 
-    let response = sign_in_social!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-in/social", json = req_body);
 
     // ----- Check Response
     let body: Value = test::read_body_json(response).await;
@@ -131,10 +95,11 @@ async fn sign_in_social_uses_custom_scopes() {
 #[actix_web::test]
 async fn sign_in_social_can_disable_redirect() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::new()))
+        config(true, MockOAuthProvider::new().into_social_providers())
     );
 
     let req_body = json!({
@@ -142,7 +107,7 @@ async fn sign_in_social_can_disable_redirect() {
         "disableRedirect": true
     });
 
-    let response = sign_in_social!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-in/social", json = req_body);
 
     // ----- Check Response
     assert_eq!(response.status(), 200);
@@ -157,6 +122,7 @@ async fn sign_in_social_can_disable_redirect() {
 #[actix_web::test]
 async fn sign_in_social_rejects_unknown_provider() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(database);
 
@@ -164,7 +130,7 @@ async fn sign_in_social_rejects_unknown_provider() {
         "provider": "unknown"
     });
 
-    let response = sign_in_social!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-in/social", json = req_body);
 
     // ----- Check Response
     assert!(!response.status().is_success());
@@ -175,17 +141,14 @@ async fn sign_in_social_rejects_unknown_provider() {
 #[actix_web::test]
 async fn callback_rejects_missing_state() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::new()))
+        config(true, MockOAuthProvider::new().into_social_providers())
     );
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/callback/mock?code=mock-code")
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(app, GET, "/api/auth/callback/mock?code=mock-code");
 
     // ----- Check Response
     assert_eq!(response.status(), 302);
@@ -203,17 +166,18 @@ async fn callback_rejects_missing_state() {
 #[actix_web::test]
 async fn callback_rejects_invalid_state() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::new()))
+        config(true, MockOAuthProvider::new().into_social_providers())
     );
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/callback/mock?code=mock-code&state=invalid-state")
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        GET,
+        "/api/auth/callback/mock?code=mock-code&state=invalid-state"
+    );
 
     // ----- Check Response
     assert_eq!(response.status(), 302);
@@ -231,19 +195,16 @@ async fn callback_rejects_invalid_state() {
 #[actix_web::test]
 async fn callback_rejects_missing_code() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::new()))
+        config(true, MockOAuthProvider::new().into_social_providers())
     );
 
-    create_oauth_transaction(&database, "valid-state", "mock", None).await;
+    seed_oauth_transaction(&database, "valid-state", "mock", None).await;
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/callback/mock?state=valid-state")
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(app, GET, "/api/auth/callback/mock?state=valid-state");
 
     // ----- Check Response
     assert_eq!(response.status(), 302);
@@ -261,19 +222,20 @@ async fn callback_rejects_missing_code() {
 #[actix_web::test]
 async fn callback_rejects_provider_mismatch() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::new()))
+        config(true, MockOAuthProvider::new().into_social_providers())
     );
 
-    create_oauth_transaction(&database, "valid-state", "another-provider", None).await;
+    seed_oauth_transaction(&database, "valid-state", "another-provider", None).await;
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/callback/mock?code=mock-code&state=valid-state")
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        GET,
+        "/api/auth/callback/mock?code=mock-code&state=valid-state"
+    );
 
     // ----- Check Response
     assert_eq!(response.status(), 302);
@@ -291,10 +253,11 @@ async fn callback_rejects_provider_mismatch() {
 #[actix_web::test]
 async fn callback_rejects_expired_state() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::new()))
+        config(true, MockOAuthProvider::new().into_social_providers())
     );
 
     let transaction = OAuthTransaction {
@@ -317,11 +280,11 @@ async fn callback_rejects_expired_state() {
         .await
         .unwrap();
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/callback/mock?code=mock-code&state=expired-state")
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        GET,
+        "/api/auth/callback/mock?code=mock-code&state=expired-state"
+    );
 
     // ----- Check Response
     let location = response
@@ -339,14 +302,15 @@ async fn callback_rejects_expired_state() {
 #[actix_web::test]
 async fn callback_creates_user_account_and_session() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::new()))
+        config(true, MockOAuthProvider::new().into_social_providers())
     );
     let store = database.to_authr_store();
 
-    create_oauth_transaction(
+    seed_oauth_transaction(
         &database,
         "valid-state",
         "mock",
@@ -354,12 +318,12 @@ async fn callback_creates_user_account_and_session() {
     )
     .await;
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/callback/mock?code=mock-code&state=valid-state")
-        .insert_header(("User-Agent", "Authr Tests"))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        GET,
+        "/api/auth/callback/mock?code=mock-code&state=valid-state",
+        headers = [(header::USER_AGENT, "Authr Tests")]
+    );
 
     // ----- Check Response
     assert_eq!(response.status(), 302);
@@ -412,10 +376,11 @@ async fn callback_creates_user_account_and_session() {
 #[actix_web::test]
 async fn callback_links_oauth_account_to_existing_user() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::new()))
+        config(true, MockOAuthProvider::new().into_social_providers())
     );
     let store = database.to_authr_store();
 
@@ -425,7 +390,7 @@ async fn callback_links_oauth_account_to_existing_user() {
         "password": "password123"
     });
 
-    let signup_response = sign_up_user!(app, req_body);
+    let signup_response = call!(app, POST, "/api/auth/sign-up", json = req_body);
     assert!(signup_response.status().is_success());
 
     let existing_user = store
@@ -434,7 +399,7 @@ async fn callback_links_oauth_account_to_existing_user() {
         .unwrap()
         .unwrap();
 
-    create_oauth_transaction(
+    seed_oauth_transaction(
         &database,
         "valid-state",
         "mock",
@@ -442,11 +407,11 @@ async fn callback_links_oauth_account_to_existing_user() {
     )
     .await;
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/callback/mock?code=mock-code&state=valid-state")
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        GET,
+        "/api/auth/callback/mock?code=mock-code&state=valid-state"
+    );
 
     // ----- Check Response
     assert_eq!(response.status(), 302);
@@ -475,16 +440,17 @@ async fn callback_links_oauth_account_to_existing_user() {
 #[actix_web::test]
 async fn callback_handles_token_exchange_failure() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
         config(
             true,
-            mock_providers(MockOAuthProvider::failing_token_exchange())
+            MockOAuthProvider::failing_token_exchange().into_social_providers()
         )
     );
 
-    create_oauth_transaction(
+    seed_oauth_transaction(
         &database,
         "valid-state",
         "mock",
@@ -492,11 +458,11 @@ async fn callback_handles_token_exchange_failure() {
     )
     .await;
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/callback/mock?code=mock-code&state=valid-state")
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        GET,
+        "/api/auth/callback/mock?code=mock-code&state=valid-state"
+    );
 
     // ----- Check Response
     let location = response
@@ -512,13 +478,17 @@ async fn callback_handles_token_exchange_failure() {
 #[actix_web::test]
 async fn callback_handles_user_info_failure() {
     // ----- Setup
+    init_tracing();
     let database = TestDatabase::default();
     let app = test_app!(
         database,
-        config(true, mock_providers(MockOAuthProvider::failing_user_info()))
+        config(
+            true,
+            MockOAuthProvider::failing_user_info().into_social_providers()
+        )
     );
 
-    create_oauth_transaction(
+    seed_oauth_transaction(
         &database,
         "valid-state",
         "mock",
@@ -526,11 +496,11 @@ async fn callback_handles_user_info_failure() {
     )
     .await;
 
-    let request = test::TestRequest::get()
-        .uri("/api/auth/callback/mock?code=mock-code&state=valid-state")
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        GET,
+        "/api/auth/callback/mock?code=mock-code&state=valid-state"
+    );
 
     // ----- Check Response
     let location = response

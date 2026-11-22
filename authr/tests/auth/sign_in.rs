@@ -1,17 +1,13 @@
-use actix_web::{
-    App,
-    http::{StatusCode, header},
-    test, web,
-};
+use actix_web::http::{StatusCode, header};
+use actix_web::test;
 use chrono::Duration;
 use serde_json::{Value, json};
 
-use authr::{
-    core::auth::{AuthrContext, SocialProviders},
-    http::router,
+use crate::common::{
+    helpers::{call, test_app},
+    log::init_tracing,
+    mock::TestDatabase,
 };
-
-use crate::common::{TestDatabase, config, init_tracing, sign_up_user, test_app};
 
 // ----- Tests
 #[actix_web::test]
@@ -23,9 +19,11 @@ async fn sign_in_creates_session_and_sets_cookie() {
     let app = test_app!(database);
     let store = database.to_authr_store();
 
-    let sign_up_response = sign_up_user!(
+    let sign_up_response = call!(
         app,
-        json!({
+        POST,
+        "/api/auth/sign-up",
+        json = json!({
             "name": "Test User",
             "email": "test@example.com",
             "password": "password123"
@@ -34,15 +32,15 @@ async fn sign_in_creates_session_and_sets_cookie() {
     assert_eq!(sign_up_response.status(), StatusCode::CREATED);
 
     // ----- Send sign-in request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-in/email")
-        .set_json(json!({
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-in/email",
+        json = json!({
             "email": "test@example.com",
             "password": "password123"
-        }))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+        })
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);
@@ -84,9 +82,11 @@ async fn sign_in_stores_user_agent() {
     let app = test_app!(database);
     let store = database.to_authr_store();
 
-    let sign_up_response = sign_up_user!(
+    let sign_up_response = call!(
         app,
-        json!({
+        POST,
+        "/api/auth/sign-up",
+        json = json!({
             "name": "Test User",
             "email": "test@example.com",
             "password": "password123"
@@ -95,16 +95,16 @@ async fn sign_in_stores_user_agent() {
     assert_eq!(sign_up_response.status(), StatusCode::CREATED);
 
     // ----- Send sign-in request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-in/email")
-        .insert_header((header::USER_AGENT, "Authr Test"))
-        .set_json(json!({
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-in/email",
+        json = json!({
             "email": "test@example.com",
             "password": "password123"
-        }))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+        }),
+        headers = [(header::USER_AGENT, "Authr Test")]
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);
@@ -127,9 +127,11 @@ async fn sign_in_respects_remember_me() {
     let app = test_app!(database);
     let store = database.to_authr_store();
 
-    let sign_up_response = sign_up_user!(
+    let sign_up_response = call!(
         app,
-        json!({
+        POST,
+        "/api/auth/sign-up",
+        json = json!({
             "name": "Test User",
             "email": "test@example.com",
             "password": "password123"
@@ -138,16 +140,16 @@ async fn sign_in_respects_remember_me() {
     assert_eq!(sign_up_response.status(), StatusCode::CREATED);
 
     // ----- Send sign-in request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-in/email")
-        .set_json(json!({
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-in/email",
+        json = json!({
             "email": "test@example.com",
             "password": "password123",
             "rememberMe": false
-        }))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+        })
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);
@@ -169,9 +171,11 @@ async fn sign_in_with_invalid_password_fails() {
     let database = TestDatabase::default();
     let app = test_app!(database);
 
-    let sign_up_response = sign_up_user!(
+    let sign_up_response = call!(
         app,
-        json!({
+        POST,
+        "/api/auth/sign-up",
+        json = json!({
             "name": "Test User",
             "email": "test@example.com",
             "password": "password123"
@@ -180,15 +184,15 @@ async fn sign_in_with_invalid_password_fails() {
     assert_eq!(sign_up_response.status(), StatusCode::CREATED);
 
     // ----- Send sign-in request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-in/email")
-        .set_json(json!({
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-in/email",
+        json = json!({
             "email": "test@example.com",
             "password": "wrong-password"
-        }))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+        })
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -203,15 +207,15 @@ async fn sign_in_with_nonexistent_email_fails() {
     let app = test_app!(database);
 
     // ----- Send sign-in request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-in/email")
-        .set_json(json!({
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-in/email",
+        json = json!({
             "email": "missing@example.com",
             "password": "password123"
-        }))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+        })
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -226,15 +230,15 @@ async fn sign_in_with_invalid_email_fails() {
     let app = test_app!(database);
 
     // ----- Send sign-in request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-in/email")
-        .set_json(json!({
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-in/email",
+        json = json!({
             "email": "invalid-email",
             "password": "password123"
-        }))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+        })
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -249,15 +253,15 @@ async fn sign_in_with_short_password_fails() {
     let app = test_app!(database);
 
     // ----- Send sign-in request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-in/email")
-        .set_json(json!({
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-in/email",
+        json = json!({
             "email": "test@example.com",
             "password": "short"
-        }))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+        })
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);

@@ -15,6 +15,8 @@ use authr::{
     },
 };
 
+use crate::common::TEST_SECRET;
+
 #[derive(Default)]
 struct TestDatabaseState {
     users: Vec<User>,
@@ -30,9 +32,19 @@ pub struct TestDatabase {
 
 impl TestDatabase {
     pub fn to_authr_store(&self) -> AuthrStore<Self> {
-        let secrets = Arc::new(derive_secrets(super::TEST_SECRET));
+        let secrets = Arc::new(derive_secrets(TEST_SECRET));
 
         AuthrStore::new(self.clone(), secrets)
+    }
+
+    pub async fn expire_verification(&self, identifier: &str) {
+        let mut state = self.state.lock().await;
+        let verification = state
+            .verifications
+            .iter_mut()
+            .find(|verification| verification.identifier == identifier)
+            .expect("verification should exist");
+        verification.expires_at = Utc::now() - Duration::seconds(1);
     }
 }
 

@@ -1,40 +1,20 @@
 use actix_web::{
-    App,
     http::{StatusCode, header},
-    test, web,
+    test,
 };
 use serde_json::{Value, json};
 
-use authr::{
-    core::{
-        auth::{AuthrContext, SocialProviders},
-        oauth::{Provider, providers::GoogleProvider},
-        types::{Account, Session, User},
-    },
-    http::router,
+use authr::core::{
+    auth::SocialProviders,
+    oauth::{Provider, providers::GoogleProvider},
+    types::Account,
 };
 
-use crate::common::{TestDatabase, config, init_tracing, test_app};
-
-// ----- Helpers
-async fn create_session(database: &TestDatabase) -> Session {
-    let store = database.to_authr_store();
-
-    let user = store
-        .create_user(User::new(
-            "Test User".to_string(),
-            "test@example.com".to_string(),
-            false,
-            None,
-        ))
-        .await
-        .unwrap();
-
-    store
-        .create_session(Session::new(user.id, None, None), false)
-        .await
-        .unwrap()
-}
+use crate::common::{
+    helpers::{call, config, seed_account, seed_session, seed_user, test_app},
+    log::init_tracing,
+    mock::TestDatabase,
+};
 
 #[actix_web::test]
 async fn sign_out_deletes_session_and_clears_cookie() {
@@ -42,20 +22,21 @@ async fn sign_out_deletes_session_and_clears_cookie() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let session = create_session(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
+    let session = seed_session(&database, user.id).await;
     let token = session.token.clone();
 
     let app = test_app!(database);
     let store = database.to_authr_store();
 
     // ----- Send sign-out request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-out")
-        .insert_header((header::COOKIE, format!("authr_session={token}")))
-        .set_json(json!({}))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-out",
+        json = json!({}),
+        headers = [(header::COOKIE, format!("authr_session={token}"))]
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);
@@ -94,12 +75,7 @@ async fn sign_out_succeeds_without_session_cookie() {
     let app = test_app!(database);
 
     // ----- Send sign-out request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-out")
-        .set_json(json!({}))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(app, POST, "/api/auth/sign-out", json = json!({}));
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);
@@ -130,13 +106,13 @@ async fn sign_out_succeeds_with_invalid_session_token() {
     let app = test_app!(database);
 
     // ----- Send sign-out request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-out")
-        .insert_header((header::COOKIE, "authr_session=invalid-token"))
-        .set_json(json!({}))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-out",
+        json = json!({}),
+        headers = [(header::COOKIE, "authr_session=invalid-token")]
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);
@@ -147,38 +123,31 @@ async fn sign_out_succeeds_with_invalid_session_token() {
 }
 
 // -------------------- Social Provider -------------------------
-async fn create_google_account(database: &TestDatabase, user_id: uuid::Uuid) -> Account {
-    let store = database.to_authr_store();
-
-    let mut account = Account::new_social(
-        user_id,
-        "google".to_string(),
-        "google-user-id".to_string(),
-        Some("access-token".to_string()),
-        Some("refresh-token".to_string()),
-        None,
-        None,
-        Some("openid email profile".to_string()),
-        Some("test-id-token".to_string()),
-    );
-
-    account.updated_at = chrono::Utc::now();
-
-    store.create_account(account.clone()).await.unwrap();
-
-    account
-}
-
 #[actix_web::test]
 async fn sign_out_redirects_to_provider_logout() {
     // ----- Setup
     init_tracing();
 
     let database = TestDatabase::default();
-    let session = create_session(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
+    let session = seed_session(&database, user.id).await;
     let token = session.token.clone();
 
-    create_google_account(&database, session.user_id).await;
+    seed_account(
+        &database,
+        Account::new_social(
+            session.user_id,
+            "google".into(),
+            "google-user-id".into(),
+            Some("access-token".into()),
+            Some("refresh-token".into()),
+            None,
+            None,
+            Some("openid email profile".into()),
+            Some("test-id-token".into()),
+        ),
+    )
+    .await;
 
     let providers = SocialProviders::new(vec![(
         "google".to_string(),
@@ -189,13 +158,13 @@ async fn sign_out_redirects_to_provider_logout() {
     let store = database.to_authr_store();
 
     // ----- Send sign-out request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-out")
-        .insert_header((header::COOKIE, format!("authr_session={token}")))
-        .set_json(json!({}))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-out",
+        json = json!({}),
+        headers = [(header::COOKIE, format!("authr_session={token}"))]
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);
@@ -238,9 +207,24 @@ async fn sign_out_respects_disable_redirect() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let session = create_session(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
+    let session = seed_session(&database, user.id).await;
 
-    create_google_account(&database, session.user_id).await;
+    seed_account(
+        &database,
+        Account::new_social(
+            session.user_id,
+            "google".into(),
+            "google-user-id".into(),
+            Some("access-token".into()),
+            Some("refresh-token".into()),
+            None,
+            None,
+            Some("openid email profile".into()),
+            Some("test-id-token".into()),
+        ),
+    )
+    .await;
 
     let providers = SocialProviders::new(vec![(
         "google".to_string(),
@@ -250,15 +234,15 @@ async fn sign_out_respects_disable_redirect() {
     let app = test_app!(database, config(true, providers));
 
     // ----- Send sign-out request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-out")
-        .insert_header((header::COOKIE, format!("authr_session={}", session.token)))
-        .set_json(json!({
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-out",
+        json = json!({
             "disableRedirect": true
-        }))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+        }),
+        headers = [(header::COOKIE, format!("authr_session={}", session.token))]
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);
@@ -282,9 +266,24 @@ async fn sign_out_includes_callback_url_and_state() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let session = create_session(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
+    let session = seed_session(&database, user.id).await;
 
-    create_google_account(&database, session.user_id).await;
+    seed_account(
+        &database,
+        Account::new_social(
+            session.user_id,
+            "google".into(),
+            "google-user-id".into(),
+            Some("access-token".into()),
+            Some("refresh-token".into()),
+            None,
+            None,
+            Some("openid email profile".into()),
+            Some("test-id-token".into()),
+        ),
+    )
+    .await;
 
     let providers = SocialProviders::new(vec![(
         "google".to_string(),
@@ -294,17 +293,17 @@ async fn sign_out_includes_callback_url_and_state() {
     let app = test_app!(database, config(true, providers));
 
     // ----- Send sign-out request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-out")
-        .insert_header((header::COOKIE, format!("authr_session={}", session.token)))
-        .set_json(json!({
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-out",
+        json = json!({
             "callbackUrl": "/goodbye",
             "state": "logout-state",
             "disableRedirect": true
-        }))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+        }),
+        headers = [(header::COOKIE, format!("authr_session={}", session.token))]
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);
@@ -328,7 +327,8 @@ async fn sign_out_without_social_account_only_revokes_session() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let session = create_session(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
+    let session = seed_session(&database, user.id).await;
     let token = session.token.clone();
 
     let providers = SocialProviders::new(vec![(
@@ -340,13 +340,13 @@ async fn sign_out_without_social_account_only_revokes_session() {
     let store = database.to_authr_store();
 
     // ----- Send sign-out request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-out")
-        .insert_header((header::COOKIE, format!("authr_session={token}")))
-        .set_json(json!({}))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-out",
+        json = json!({}),
+        headers = [(header::COOKIE, format!("authr_session={token}"))]
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);
@@ -365,7 +365,8 @@ async fn sign_out_attempts_provider_logout_without_id_token() {
     init_tracing();
 
     let database = TestDatabase::default();
-    let session = create_session(&database).await;
+    let user = seed_user(&database, "Test User", "test@example.com").await;
+    let session = seed_session(&database, user.id).await;
 
     let store = database.to_authr_store();
 
@@ -391,15 +392,15 @@ async fn sign_out_attempts_provider_logout_without_id_token() {
     let app = test_app!(database, config(true, providers));
 
     // ----- Send sign-out request
-    let request = test::TestRequest::post()
-        .uri("/api/auth/sign-out")
-        .insert_header((header::COOKIE, format!("authr_session={}", session.token)))
-        .set_json(json!({
+    let response = call!(
+        app,
+        POST,
+        "/api/auth/sign-out",
+        json = json!({
             "disableRedirect": true
-        }))
-        .to_request();
-
-    let response = test::call_service(&app, request).await;
+        }),
+        headers = [(header::COOKIE, format!("authr_session={}", session.token))]
+    );
 
     // ----- Verify response
     assert_eq!(response.status(), StatusCode::OK);

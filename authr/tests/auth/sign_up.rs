@@ -1,13 +1,14 @@
-use actix_web::{App, http::StatusCode, test, web};
+use actix_web::{http::StatusCode, test};
 use chrono::Duration;
 use serde_json::{Value, json};
 
-use authr::{
-    core::auth::{AuthrContext, SocialProviders},
-    http::router,
-};
+use authr::core::auth::SocialProviders;
 
-use crate::common::{TestDatabase, config, init_tracing, sign_up_user, test_app};
+use crate::common::{
+    helpers::{call, config, test_app},
+    log::init_tracing,
+    mock::TestDatabase,
+};
 // -------------------- Successful Registration --------------------
 
 #[actix_web::test]
@@ -24,7 +25,7 @@ async fn sign_up_creates_user_account_and_session() {
         "email": "test@example.com",
         "password": "password123"
     });
-    let response = sign_up_user!(app, req_body.clone());
+    let response = call!(app, POST, "/api/auth/sign-up", json = req_body.clone());
 
     assert_eq!(response.status(), StatusCode::CREATED);
 
@@ -82,7 +83,7 @@ async fn sign_up_normalizes_email_to_lowercase() {
         "email": "TEST@EXAMPLE.COM",
         "password": "password123"
     });
-    let response = sign_up_user!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-up", json = req_body);
 
     assert_eq!(response.status(), StatusCode::CREATED);
 
@@ -110,14 +111,14 @@ async fn sign_up_returns_generic_response_for_existing_email() {
     });
 
     // First Sign-Up
-    let first_response = sign_up_user!(app, req_body.clone());
+    let first_response = call!(app, POST, "/api/auth/sign-up", json = req_body.clone());
     assert_eq!(first_response.status(), StatusCode::CREATED);
 
     let first_body: Value = test::read_body_json(first_response).await;
     let first_user_id = first_body["user"]["id"].as_str().unwrap();
 
     // Duplicate Sign-Up
-    let second_response = sign_up_user!(app, req_body);
+    let second_response = call!(app, POST, "/api/auth/sign-up", json = req_body);
     assert_eq!(second_response.status(), StatusCode::CREATED);
 
     let second_body: Value = test::read_body_json(second_response).await;
@@ -151,7 +152,7 @@ async fn sign_up_rejects_invalid_email() {
         "email": "invalid-email",
         "password": "password123"
     });
-    let response = sign_up_user!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-up", json = req_body);
 
     // ----- Rejects
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -170,7 +171,7 @@ async fn sign_up_rejects_short_password() {
         "email": "john@example.com",
         "password": "short"
     });
-    let response = sign_up_user!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-up", json = req_body);
 
     // ----- Rejects
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -189,7 +190,7 @@ async fn sign_up_rejects_long_password() {
         "email": "john@example.com",
         "password": "a".repeat(129)
     });
-    let response = sign_up_user!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-up", json = req_body);
 
     // ----- Rejects
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -208,7 +209,7 @@ async fn sign_up_rejects_empty_name() {
         "email": "john@example.com",
         "password": "password123"
     });
-    let response = sign_up_user!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-up", json = req_body);
 
     // ----- Rejects
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -226,7 +227,7 @@ async fn sign_up_rejects_missing_fields() {
         "email": "john@example.com",
         "password": "password123"
     });
-    let response = sign_up_user!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-up", json = req_body);
 
     // ----- Rejects
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -249,7 +250,7 @@ async fn sign_up_creates_long_lived_session_when_remember_me_is_true() {
         "password": "password123",
         "rememberMe": true
     });
-    let response = sign_up_user!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-up", json = req_body);
 
     assert_eq!(response.status(), StatusCode::CREATED);
 
@@ -282,7 +283,7 @@ async fn sign_up_creates_short_lived_session_when_remember_me_is_false() {
         "password": "password123",
         "rememberMe": false
     });
-    let response = sign_up_user!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-up", json = req_body);
 
     assert_eq!(response.status(), StatusCode::CREATED);
 
@@ -316,7 +317,7 @@ async fn sign_up_without_auto_sign_in_does_not_create_session() {
         "email": "test@example.com",
         "password": "password123"
     });
-    let response = sign_up_user!(app, req_body);
+    let response = call!(app, POST, "/api/auth/sign-up", json = req_body);
 
     assert_eq!(response.status(), StatusCode::CREATED);
 
